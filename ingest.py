@@ -1,19 +1,17 @@
 """
-Data ingestion: scrape 飞享IM website and build the vector store.
+Data ingestion: scrape 飞享IM website and build the BM25 retriever.
 Run once before starting the Q&A service.
 """
 
+import json
 import requests
 from bs4 import BeautifulSoup
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import FastEmbedEmbeddings
+from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 
 from config import (
-    CHROMA_PERSIST_DIR,
-    COLLECTION_NAME,
-    EMBEDDING_MODEL,
+    DOCS_PERSIST_PATH,
     FSHARECHAT_URLS,
     FSHARECHAT_STATIC_KNOWLEDGE,
 )
@@ -25,7 +23,6 @@ def scrape_page(url: str) -> str:
         resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-        # Remove script/style noise
         for tag in soup(["script", "style", "nav", "footer"]):
             tag.decompose()
         return soup.get_text(separator="\n", strip=True)
@@ -38,7 +35,6 @@ def load_documents() -> list[Document]:
     """Load documents from website scraping + static knowledge."""
     docs: list[Document] = []
 
-    # 1. Scrape live pages
     print("Scraping 飞享IM website...")
     for url in FSHARECHAT_URLS:
         print(f"  Fetching {url}")
@@ -46,7 +42,6 @@ def load_documents() -> list[Document]:
         if text:
             docs.append(Document(page_content=text, metadata={"source": url}))
 
-    # 2. Always include curated static knowledge (covers gaps from scraping)
     docs.append(Document(
         page_content=FSHARECHAT_STATIC_KNOWLEDGE,
         metadata={"source": "static_knowledge"},
@@ -56,8 +51,16 @@ def load_documents() -> list[Document]:
     return docs
 
 
-def build_vectorstore() -> Chroma:
-    """Chunk documents and store embeddings in ChromaDB."""
+def _chunks_to_json(chunks: list[Document]) -> list[dict]:
+    return [{"page_content": d.page_content, "metadata": d.metadata} for d in chunks]
+
+
+def _json_to_chunks(data: list[dict]) -> list[Document]:
+    return [Document(page_content=d["page_content"], metadata=d["metadata"]) for d in data]
+
+
+def build_retriever() -> BM25Retriever:
+    """Chunk documents, persist to JSON, and return a BM25Retriever."""
     docs = load_documents()
 
     splitter = RecursiveCharacterTextSplitter(
@@ -68,30 +71,21 @@ def build_vectorstore() -> Chroma:
     chunks = splitter.split_documents(docs)
     print(f"Split into {len(chunks)} chunks")
 
-    print(f"Loading embedding model: {EMBEDDING_MODEL}")
-    embeddings = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL)
+    with open(DOCS_PERSIST_PATH, "w", encoding="utf-8") as f:
+        json.dump(_chunks_to_json(chunks), f, ensure_ascii=False, indent=2)
+    print(f"Documents saved to {DOCS_PERSIST_PATH}")
 
-    print("Building ChromaDB vector store...")
-    vectorstore = Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings,
-        persist_directory=CHROMA_PERSIST_DIR,
-        collection_name=COLLECTION_NAME,
-    )
-    print(f"Vector store saved to {CHROMA_PERSIST_DIR}")
-    return vectorstore
+    retriever = BM25Retriever.from_documents(chunks, k=5)
+    return retriever
 
 
-def load_vectorstore() -> Chroma:
-    """Load an existing ChromaDB vector store."""
-    embeddings = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL)
-    return Chroma(
-        persist_directory=CHROMA_PERSIST_DIR,
-        embedding_function=embeddings,
-        collection_name=COLLECTION_NAME,
-    )
+def load_retriever() -> BM25Retriever:
+    """Load persisted chunks from JSON and return a BM25Retriever."""
+    with open(DOCS_PERSIST_PATH, "r", encoding="utf-8") as f:
+        chunks = _json_to_chunks(json.load(f))
+    return BM25Retriever.from_documents(chunks, k=5)
 
 
 if __name__ == "__main__":
-    build_vectorstore()
+    build_retriever()
     print("Ingestion complete. Ready to answer questions about 飞享IM.")

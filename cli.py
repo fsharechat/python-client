@@ -5,21 +5,19 @@ Interactive CLI for the 飞享IM Q&A chatbot (no FastAPI required).
 import os
 import sys
 
-from config import CHROMA_PERSIST_DIR
+from config import DOCS_PERSIST_PATH
 from graph import build_graph, QAState
-from ingest import build_vectorstore, load_vectorstore
+from ingest import build_retriever, load_retriever
 
 
 def main():
-    # Prepare vector store
-    if not os.path.exists(CHROMA_PERSIST_DIR):
+    if not os.path.exists(DOCS_PERSIST_PATH):
         print("首次运行，正在构建知识库（约需 1-2 分钟）...")
-        vectorstore = build_vectorstore()
+        retriever = build_retriever()
     else:
         print("加载知识库...")
-        vectorstore = load_vectorstore()
+        retriever = load_retriever()
 
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
     graph = build_graph(retriever)
 
     print("\n" + "=" * 60)

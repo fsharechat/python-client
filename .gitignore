@@ -15,8 +15,9 @@ dist/
 build/
 .eggs/
 
-# Vector store (auto-generated, large)
+# Auto-generated knowledge base cache
 chroma_db/
+docs_cache.json
 
 # IDE
 .idea/

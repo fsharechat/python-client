@@ -14,9 +14,9 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from config import CHROMA_PERSIST_DIR
+from config import DOCS_PERSIST_PATH
 from graph import build_graph, QAState
-from ingest import build_vectorstore, load_vectorstore
+from ingest import build_retriever, load_retriever
 
 
 # ─── App lifecycle ────────────────────────────────────────────────────────────
@@ -26,15 +26,13 @@ app_state: dict = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Build vector store if it doesn't exist yet
-    if not os.path.exists(CHROMA_PERSIST_DIR):
-        print("Vector store not found – running ingestion...")
-        vectorstore = build_vectorstore()
+    if not os.path.exists(DOCS_PERSIST_PATH):
+        print("Knowledge base not found – running ingestion...")
+        retriever = build_retriever()
     else:
-        print("Loading existing vector store...")
-        vectorstore = load_vectorstore()
+        print("Loading existing knowledge base...")
+        retriever = load_retriever()
 
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
     app_state["graph"] = build_graph(retriever)
     print("Q&A service ready.")
     yield

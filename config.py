@@ -7,12 +7,8 @@ load_dotenv()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = "claude-opus-4-7"
 
-# Vector store
-CHROMA_PERSIST_DIR = "./chroma_db"
-COLLECTION_NAME = "fsharechat_docs"
-
-# Embedding model (local, no API key needed)
-EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
+# Document cache (BM25 retriever — no embedding model required)
+DOCS_PERSIST_PATH = "./docs_cache.json"
 
 # Data sources — pages to scrape for 飞享IM knowledge base
 FSHARECHAT_URLS = [
