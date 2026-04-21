@@ -7,7 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_core.documents import Document
 
 from config import (
@@ -69,11 +69,7 @@ def build_vectorstore() -> Chroma:
     print(f"Split into {len(chunks)} chunks")
 
     print(f"Loading embedding model: {EMBEDDING_MODEL}")
-    embeddings = HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    embeddings = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL)
 
     print("Building ChromaDB vector store...")
     vectorstore = Chroma.from_documents(
@@ -88,11 +84,7 @@ def build_vectorstore() -> Chroma:
 
 def load_vectorstore() -> Chroma:
     """Load an existing ChromaDB vector store."""
-    embeddings = HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    embeddings = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL)
     return Chroma(
         persist_directory=CHROMA_PERSIST_DIR,
         embedding_function=embeddings,
