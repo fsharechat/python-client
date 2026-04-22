@@ -84,18 +84,37 @@ def ask(req: AskRequest):
 
 
 @app.post("/stream")
-def stream_ask(req: AskRequest):
+async def stream_ask(req: AskRequest):
     """Stream the answer token-by-token via Server-Sent Events."""
     graph = app_state["graph"]
 
-    def event_generator():
-        for chunk in graph.stream(QAState(question=req.question)):
-            for node_name, updates in chunk.items():
-                print(f"[node: {node_name}] {updates}")
-                if "answer" in updates and updates["answer"]:
-                    yield updates["answer"]
+    async def event_generator():
+        async for event in graph.astream_events(
+            QAState(question=req.question), version="v2"
+        ):
+            kind = event["event"]
+            node = event.get("metadata", {}).get("langgraph_node", "")
 
-    return StreamingResponse(event_generator(), media_type="text/plain; charset=utf-8")
+            if kind == "on_chat_model_stream" and node == "generate":
+                content = event["data"]["chunk"].content
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text" and part["text"]:
+                            yield part["text"]
+                elif isinstance(content, str) and content:
+                    yield content
+
+            elif kind == "on_chain_end" and node in ("reject", "fallback"):
+                output = event["data"].get("output", {})
+                answer = output.get("answer", "") if isinstance(output, dict) else ""
+                if answer:
+                    yield answer
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ─── CLI convenience ──────────────────────────────────────────────────────────
