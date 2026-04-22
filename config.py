@@ -6,9 +6,12 @@ load_dotenv()
 # Anthropic
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = "claude-opus-4-7"
+CLASSIFY_MODEL = "claude-haiku-4-5-20251001"  # lightweight model for simple classification
+GENERATE_MODEL = "claude-sonnet-4-6"          # balanced speed/quality for answer generation
 
 # Document cache (BM25 retriever — no embedding model required)
 DOCS_PERSIST_PATH = "./docs_cache.json"
+RETRIEVER_K = 3  # top-k chunks to retrieve; fewer = fewer grading LLM calls
 
 # Data sources — pages to scrape for 飞享IM knowledge base
 FSHARECHAT_URLS = [

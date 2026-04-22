@@ -4,6 +4,7 @@ Interactive CLI for the 飞享IM Q&A chatbot (no FastAPI required).
 
 import os
 import sys
+import time
 
 from config import DOCS_PERSIST_PATH
 from graph import build_graph, QAState
@@ -39,8 +40,11 @@ def main():
             continue
 
         print("\n思考中...\n")
+        t0 = time.perf_counter()
         result = graph.invoke(QAState(question=question))
+        total = time.perf_counter() - t0
         answer = result.answer if isinstance(result, QAState) else result.get("answer", "")
+        print(f"[timing] total: {total:.2f}s\n")
         print(f"助手：{answer}\n")
         print("-" * 60 + "\n")
 

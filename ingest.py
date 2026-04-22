@@ -14,6 +14,7 @@ from config import (
     DOCS_PERSIST_PATH,
     FSHARECHAT_URLS,
     FSHARECHAT_STATIC_KNOWLEDGE,
+    RETRIEVER_K,
 )
 
 
@@ -75,7 +76,7 @@ def build_retriever() -> BM25Retriever:
         json.dump(_chunks_to_json(chunks), f, ensure_ascii=False, indent=2)
     print(f"Documents saved to {DOCS_PERSIST_PATH}")
 
-    retriever = BM25Retriever.from_documents(chunks, k=5)
+    retriever = BM25Retriever.from_documents(chunks, k=RETRIEVER_K)
     return retriever
 
 
@@ -83,7 +84,7 @@ def load_retriever() -> BM25Retriever:
     """Load persisted chunks from JSON and return a BM25Retriever."""
     with open(DOCS_PERSIST_PATH, "r", encoding="utf-8") as f:
         chunks = _json_to_chunks(json.load(f))
-    return BM25Retriever.from_documents(chunks, k=5)
+    return BM25Retriever.from_documents(chunks, k=RETRIEVER_K)
 
 
 if __name__ == "__main__":
