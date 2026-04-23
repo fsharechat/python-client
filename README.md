@@ -61,7 +61,7 @@ on_topic  off_topic
   │         │
   ▼         ▼
 ┌────────┐ ┌────────┐
-│retrieve│ │ reject │ → 告知只回答飞享IM相关问题
+│retrieve│ │ reject │ → Claude Sonnet 4.6 直接回答通用问题
 └───┬────┘ └────────┘
     │
     ▼
@@ -179,6 +179,22 @@ python service.py
 
 服务启动后监听 `http://0.0.0.0:8000`，可通过以下方式访问：
 
+#### 后台运行（生产/服务器环境）
+
+```bash
+# 启动（日志写入 service.log）
+nohup python3.11 service.py > service.log 2>&1 &
+
+# 查看实时日志
+tail -f service.log
+
+# 查看进程 PID
+pgrep -fa "service.py"
+
+# 重启（停止旧进程后重新启动）
+pkill -f "service.py" && sleep 1 && nohup python3.11 service.py > service.log 2>&1 &
+```
+
 ```bash
 # 普通问答
 curl -X POST http://localhost:8000/ask \
@@ -253,7 +269,7 @@ curl -X POST http://localhost:8000/ask \
   -d '{"question": "今天天气怎么样？"}'
 ```
 
-预期：返回引导用户提问飞享IM相关问题的提示，`route` 为 `off_topic`。
+预期：由 Claude Sonnet 4.6 直接回答通用问题，`route` 为 `off_topic`。
 
 #### 4. 流式输出测试
 
