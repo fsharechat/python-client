@@ -17,7 +17,7 @@ async def stream_answer(graph, question: str) -> None:
         kind = event["event"]
         node = event.get("metadata", {}).get("langgraph_node", "")
 
-        if kind == "on_chat_model_stream" and node == "generate":
+        if kind == "on_chat_model_stream" and node in ("generate", "reject"):
             content = event["data"]["chunk"].content
             if isinstance(content, list):
                 for part in content:
@@ -26,7 +26,7 @@ async def stream_answer(graph, question: str) -> None:
             elif isinstance(content, str) and content:
                 print(content, end="", flush=True)
 
-        elif kind == "on_chain_end" and node in ("reject", "fallback"):
+        elif kind == "on_chain_end" and node == "fallback":
             output = event["data"].get("output", {})
             answer = output.get("answer", "") if isinstance(output, dict) else ""
             if answer:

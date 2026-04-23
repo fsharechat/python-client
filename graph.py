@@ -5,19 +5,19 @@ Flow:
   user question
       │
       ▼
-  [classify] ─── off-topic ──► [reject]
+  [classify] ── off-topic ──► [reject] → Claude Sonnet 4.6 直接回答通用问题（流式输出）
       │
   on-topic
       │
       ▼
-  [retrieve] → fetch top-k chunks from ChromaDB
+  [retrieve] → BM25 检索 top-k 文档块
       │
       ▼
-  [grade_docs] → filter irrelevant chunks
+  [grade_docs] → 并发逐块评分，过滤无关内容
       │
-      ├─ has relevant docs ──► [generate] → stream answer with Claude
+      ├─ 有相关文档 ──► [generate] → Claude Sonnet 4.6 基于知识库回答（流式输出）
       │
-      └─ no relevant docs ──► [fallback] → politely say knowledge is limited
+      └─ 无相关文档 ──► [fallback] → 提示知识库不足，建议访问官网
 """
 
 from __future__ import annotations
@@ -157,13 +157,21 @@ def fallback(state: QAState, retriever) -> dict:
     return {"answer": answer}
 
 
-# ─── Node: reject ─────────────────────────────────────────────────────────────
+# ─── Node: reject (general Q&A for off-topic questions) ──────────────────────
+
+GENERAL_SYSTEM = """你是一个知识渊博的AI助手，能够回答各种问题。
+请用中文友好、准确地回答用户问题。回答简洁明了，控制在500字以内。"""
 
 def reject(state: QAState, retriever) -> dict:
-    answer = (
-        "您好！我是飞享IM专属智能助手，只能回答与飞享IM相关的问题。\n"
-        "请问您有关于飞享IM功能、部署、使用等方面的问题吗？"
-    )
+    t0 = time.perf_counter()
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", GENERAL_SYSTEM),
+        ("human", "{question}"),
+    ])
+    llm = _llm(streaming=True, model=GENERATE_MODEL, thinking=False, max_tokens=1000)
+    chain = prompt | llm | StrOutputParser()
+    answer = chain.invoke({"question": state.question})
+    print(f"[timing] general_answer: {time.perf_counter() - t0:.2f}s")
     return {"answer": answer}
 
 
