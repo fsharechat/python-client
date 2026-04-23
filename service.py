@@ -8,6 +8,7 @@ Endpoints:
 """
 
 import os
+from collections import deque
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -47,10 +48,31 @@ app = FastAPI(
 )
 
 
+# ─── Conversation memory ──────────────────────────────────────────────────────
+
+MAX_HISTORY_TURNS = 10  # 每用户保留最近 10 轮（user + assistant 各一条 = 20 条消息）
+
+# {userid: deque([{"role": "user"|"assistant", "content": "..."}])}
+conversation_store: dict[str, deque] = {}
+
+
+def get_history(userid: str) -> list[dict]:
+    return list(conversation_store.get(userid, []))
+
+
+def save_exchange(userid: str, question: str, answer: str) -> None:
+    if userid not in conversation_store:
+        conversation_store[userid] = deque(maxlen=MAX_HISTORY_TURNS * 2)
+    store = conversation_store[userid]
+    store.append({"role": "user", "content": question})
+    store.append({"role": "assistant", "content": answer})
+
+
 # ─── Schemas ──────────────────────────────────────────────────────────────────
 
 class AskRequest(BaseModel):
     question: str
+    userid: str = "default"
 
 
 class AskResponse(BaseModel):
@@ -69,13 +91,17 @@ def health():
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
     graph = app_state["graph"]
-    result = graph.invoke(QAState(question=req.question))
+    history = get_history(req.userid)
+    result = graph.invoke(QAState(question=req.question, history=history))
     if isinstance(result, dict):
+        answer = result.get("answer", "")
+        save_exchange(req.userid, req.question, answer)
         return AskResponse(
             question=result.get("question", req.question),
-            answer=result.get("answer", ""),
+            answer=answer,
             route=result.get("route", ""),
         )
+    save_exchange(req.userid, req.question, result.answer)
     return AskResponse(
         question=result.question,
         answer=result.answer,
@@ -87,10 +113,12 @@ def ask(req: AskRequest):
 async def stream_ask(req: AskRequest):
     """Stream the answer token-by-token via Server-Sent Events."""
     graph = app_state["graph"]
+    history = get_history(req.userid)
+    collected: list[str] = []
 
     async def event_generator():
         async for event in graph.astream_events(
-            QAState(question=req.question), version="v2"
+            QAState(question=req.question, history=history), version="v2"
         ):
             kind = event["event"]
             node = event.get("metadata", {}).get("langgraph_node", "")
@@ -100,15 +128,20 @@ async def stream_ask(req: AskRequest):
                 if isinstance(content, list):
                     for part in content:
                         if isinstance(part, dict) and part.get("type") == "text" and part["text"]:
+                            collected.append(part["text"])
                             yield part["text"]
                 elif isinstance(content, str) and content:
+                    collected.append(content)
                     yield content
 
             elif kind == "on_chain_end" and node == "fallback":
                 output = event["data"].get("output", {})
                 answer = output.get("answer", "") if isinstance(output, dict) else ""
                 if answer:
+                    collected.append(answer)
                     yield answer
+
+        save_exchange(req.userid, req.question, "".join(collected))
 
     return StreamingResponse(
         event_generator(),
