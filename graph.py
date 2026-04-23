@@ -160,7 +160,7 @@ def fallback(state: QAState, retriever) -> dict:
 # ─── Node: reject (general Q&A for off-topic questions) ──────────────────────
 
 GENERAL_SYSTEM = """你是一个知识渊博的AI助手，能够回答各种问题。
-请用中文友好、准确地回答用户问题。回答简洁明了，控制在500字以内。"""
+请用中文友好、准确地回答用户问题。"""
 
 def reject(state: QAState, retriever) -> dict:
     t0 = time.perf_counter()
@@ -168,7 +168,7 @@ def reject(state: QAState, retriever) -> dict:
         ("system", GENERAL_SYSTEM),
         ("human", "{question}"),
     ])
-    llm = _llm(streaming=True, model=GENERATE_MODEL, thinking=False, max_tokens=1000)
+    llm = _llm(streaming=True, model=GENERATE_MODEL, thinking=False, max_tokens=4096)
     chain = prompt | llm | StrOutputParser()
     answer = chain.invoke({"question": state.question})
     print(f"[timing] general_answer: {time.perf_counter() - t0:.2f}s")
