@@ -50,7 +50,7 @@ app = FastAPI(
 
 # ─── Conversation memory ──────────────────────────────────────────────────────
 
-MAX_HISTORY_TURNS = 10  # 每用户保留最近 10 轮（user + assistant 各一条 = 20 条消息）
+MAX_HISTORY_TURNS = 3  # 每用户保留最近 3 轮（user + assistant 各一条 = 6 条消息）
 
 # {userid: deque([{"role": "user"|"assistant", "content": "..."}])}
 conversation_store: dict[str, deque] = {}
