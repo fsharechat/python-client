@@ -171,7 +171,8 @@ def fallback(state: QAState, retriever) -> dict:
 # ─── Node: reject (general Q&A for off-topic questions) ──────────────────────
 
 GENERAL_SYSTEM = """你是一个知识渊博的AI助手，能够回答各种问题。
-请用中文友好、准确地回答用户问题。"""
+请用中文友好、准确地回答用户问题。
+回答应简洁完整，除非用户明确要求详细展开，否则控制在5000字以内。"""
 
 def reject(state: QAState, retriever) -> dict:
     t0 = time.perf_counter()
