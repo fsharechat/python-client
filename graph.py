@@ -178,7 +178,7 @@ def reject(state: QAState, retriever) -> dict:
     messages = [SystemMessage(content=GENERAL_SYSTEM)]
     messages.extend(_history_to_messages(state.history))
     messages.append(HumanMessage(content=state.question))
-    llm = _llm(streaming=True, model=GENERATE_MODEL, thinking=False, max_tokens=4096)
+    llm = _llm(streaming=True, model=GENERATE_MODEL, thinking=False, max_tokens=8192)
     answer = (llm | StrOutputParser()).invoke(messages)
     print(f"[timing] general_answer: {time.perf_counter() - t0:.2f}s")
     return {"answer": answer}
