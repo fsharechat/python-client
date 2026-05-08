@@ -2,15 +2,19 @@
 FastAPI service exposing the 飞享IM Q&A chatbot.
 
 Endpoints:
-  POST /ask      – single-turn Q&A
-  POST /stream   – streaming Q&A (SSE)
-  GET  /health   – liveness probe
+  POST /ask              – single-turn Q&A
+  POST /stream           – streaming Q&A (SSE)
+  GET  /health           – liveness probe
+  POST /nasdaq/trigger   – manually trigger Nasdaq daily report
 """
 
+import asyncio
 import os
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import date as date_type
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -18,6 +22,18 @@ from pydantic import BaseModel
 from config import DOCS_PERSIST_PATH
 from graph import build_graph, QAState
 from ingest import build_retriever, load_retriever
+from nasdaq_agent.graph import build_nasdaq_graph
+
+
+# ─── Nasdaq report runner ─────────────────────────────────────────────────────
+
+async def _run_nasdaq_report(nasdaq_graph) -> None:
+    today = date_type.today().isoformat()
+    print(f"[nasdaq] Starting daily report for {today} ...")
+    initial = {"date": today, "raw_articles": [], "report_content": "", "send_status": ""}
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, nasdaq_graph.invoke, initial)
+    print("[nasdaq] Daily report complete.")
 
 
 # ─── App lifecycle ────────────────────────────────────────────────────────────
@@ -36,7 +52,28 @@ async def lifespan(app: FastAPI):
 
     app_state["graph"] = build_graph(retriever)
     print("Q&A service ready.")
+
+    # ── Nasdaq 盘前日报定时任务 ──────────────────────────────────────────────
+    nasdaq_graph = build_nasdaq_graph()
+    app_state["nasdaq_graph"] = nasdaq_graph
+
+    scheduler = AsyncIOScheduler(timezone="America/New_York")
+    # 每个工作日 ET 8:00 AM（自动处理夏/冬令时）
+    scheduler.add_job(
+        _run_nasdaq_report,
+        "cron",
+        day_of_week="mon-fri",
+        hour=8,
+        minute=0,
+        args=[nasdaq_graph],
+    )
+    scheduler.start()
+    app_state["scheduler"] = scheduler
+    print("Nasdaq scheduler started (ET 08:00, Mon–Fri).")
+
     yield
+
+    scheduler.shutdown(wait=False)
     app_state.clear()
 
 
@@ -148,6 +185,16 @@ async def stream_ask(req: AskRequest):
         media_type="text/plain; charset=utf-8",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ─── Nasdaq manual trigger ────────────────────────────────────────────────────
+
+@app.post("/nasdaq/trigger")
+async def trigger_nasdaq_report():
+    """立即触发一次纳斯达克盘前日报（用于测试或手动补发）。"""
+    nasdaq_graph = app_state["nasdaq_graph"]
+    asyncio.create_task(_run_nasdaq_report(nasdaq_graph))
+    return {"status": "triggered", "date": date_type.today().isoformat()}
 
 
 # ─── CLI convenience ──────────────────────────────────────────────────────────

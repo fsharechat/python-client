@@ -109,16 +109,30 @@ on_topic  off_topic
 # 1. 克隆或进入项目目录
 cd python_client
 
-# 2. 创建虚拟环境（推荐）
-python -m venv .venv
+# 2. 创建虚拟环境（推荐，用指定 Python 版本）
+python3.11 -m venv .venv
 source .venv/bin/activate        # Linux / macOS
 # .venv\Scripts\activate         # Windows
 
-# 3. 安装依赖
+# 3. 安装依赖（激活虚拟环境后 pip 自动绑定到 3.11）
 pip install -r requirements.txt
 ```
 
-> 首次安装 `sentence-transformers` 时会自动下载嵌入模型，需保持网络畅通。
+> **指定 Python 版本说明**：`pip install` 安装到哪个 Python 取决于调用的是哪个 `pip`，而非 `pip` 自身的参数。
+>
+> | 场景 | 命令 |
+> |------|------|
+> | 虚拟环境（推荐） | `python3.11 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt` |
+> | 不用虚拟环境 | `python3.11 -m pip install -r requirements.txt` |
+> | 系统多版本并存 | `pip3.11 install -r requirements.txt` |
+>
+> 验证当前 pip 对应的 Python 版本：
+> ```bash
+> pip --version
+> # pip 24.0 from .../python3.11/... (python 3.11)
+> ```
+
+> 首次安装时会自动下载嵌入模型（约 100MB），需保持网络畅通。
 
 ---
 
@@ -220,6 +234,14 @@ python ingest.py
 ---
 
 ## 测试
+
+> **代理提示**：如果本机配置了 HTTP 代理（如 VPN、Clash 等），curl 默认会将 localhost 流量也走代理，导致连接失败。加上 `--noproxy localhost` 可绕过代理直连本地服务：
+> ```bash
+> curl --noproxy localhost -X POST http://localhost:8000/ask \
+>   -H "Content-Type: application/json" \
+>   -d '{"question": "飞享IM支持哪些部署方式？"}'
+> ```
+> 以下所有示例均可按需添加 `--noproxy localhost`。
 
 ### 手动测试用例
 
@@ -352,3 +374,14 @@ data: [DONE]
 ### GET /health
 
 服务存活检查，返回 `{"status": "ok"}`。
+
+### POST /nasdaq/trigger
+
+立即触发一次纳斯达克100盘前日报（用于测试或手动补发），任务在后台异步执行。
+
+```bash
+curl --noproxy localhost -X POST http://localhost:8000/nasdaq/trigger
+# 响应: {"status": "triggered", "date": "2026-05-08"}
+```
+
+正常情况下日报会在每个工作日美东时间 8:00 AM（北京时间夏令时 20:00 / 冬令时 21:00）自动发送，无需手动触发。
