@@ -117,11 +117,16 @@ async def _fetch_stock_data() -> tuple[list[tuple], str]:
     async with httpx.AsyncClient(headers=_EM_HEADERS, timeout=20, trust_env=False) as client:
         resp = await client.get(_EM_URL, params=params)
 
+    print(f"[nasdaq] East Money HTTP {resp.status_code}, body[:200]: {resp.text[:200]}")
+
     if resp.status_code != 200:
         raise RuntimeError(f"East Money API returned HTTP {resp.status_code}")
 
-    diff = resp.json().get("data", {}).get("diff", [])
+    raw = resp.json()
+    print(f"[nasdaq] East Money data keys: {list(raw.get('data', {}).keys())}")
+    diff = raw.get("data", {}).get("diff", [])
     items = diff if isinstance(diff, list) else list(diff.values())
+    print(f"[nasdaq] East Money diff items count: {len(items)}")
 
     results = []
     for item in items:
@@ -144,7 +149,9 @@ async def fetch_stock_movers(state: NasdaqReportState) -> dict:
     try:
         results, label = await _fetch_stock_data()
     except Exception as e:
+        import traceback
         print(f"[nasdaq] fetch_stock_movers failed: {e}")
+        print(traceback.format_exc())
         return {"stock_movers": "（股票数据获取失败）"}
 
     if not results:
