@@ -34,7 +34,7 @@ from nasdaq_agent.graph import build_nasdaq_graph
 async def _run_nasdaq_report(nasdaq_graph) -> None:
     today = date_type.today().isoformat()
     print(f"[nasdaq] Starting daily report for {today} ...")
-    initial = {"date": today, "raw_articles": [], "report_content": "", "send_status": ""}
+    initial = {"date": today, "raw_articles": [], "stock_movers": "", "report_content": "", "send_status": ""}
     await nasdaq_graph.ainvoke(initial)
     print("[nasdaq] Daily report complete.")
 

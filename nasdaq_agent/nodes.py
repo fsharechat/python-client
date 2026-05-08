@@ -2,12 +2,15 @@
 Nasdaq 100 盘前日报 Agent 各节点实现（全 async）。
 
 搜索使用 httpx 异步抓取 DuckDuckGo HTML，避免 ddgs/primp 在线程池中的 segfault。
-并行搜索（4个节点）→ generate_report → send_notification
+并行节点（4路搜索 + 1路股票行情）→ generate_report → send_notification
 """
 
+import asyncio
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
+import yfinance as yf
 from bs4 import BeautifulSoup
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -15,6 +18,7 @@ from langchain_core.output_parsers import StrOutputParser
 
 from config import ANTHROPIC_API_KEY, GENERATE_MODEL
 from nasdaq_agent.state import NasdaqReportState
+from nasdaq_agent.tickers import NASDAQ100_TICKERS
 
 NOTIFY_URL = "https://backend-http.fsharechat.cn/imopenapi/pushNotificationByMobile"
 NOTIFY_MOBILES = [13900000001]
@@ -89,10 +93,56 @@ async def search_futures(state: NasdaqReportState) -> dict:
     return {"raw_articles": results}
 
 
+# ─── 股票涨跌幅节点（yfinance，在独立线程中运行） ────────────────────────────
+
+def _fetch_one(symbol: str) -> tuple | None:
+    """单支股票盘前涨跌幅，yfinance fast_info 在盘前时段 last_price 即为盘前价。"""
+    try:
+        fi = yf.Ticker(symbol).fast_info
+        last = fi.last_price
+        prev = fi.regular_market_previous_close
+        if last and prev and prev > 0:
+            return (symbol, last, (last - prev) / prev * 100)
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_movers_sync() -> str:
+    """用线程池并发拉取全部 Nasdaq 100 成分股盘前价，返回格式化的涨跌榜文本。"""
+    print(f"[nasdaq] fetch_stock_movers: fetching {len(NASDAQ100_TICKERS)} tickers ...")
+    with ThreadPoolExecutor(max_workers=20) as ex:
+        results = [r for r in ex.map(_fetch_one, NASDAQ100_TICKERS) if r]
+
+    if not results:
+        return "（盘前股票数据暂不可用）"
+
+    results.sort(key=lambda x: x[2], reverse=True)
+    gainers = results[:10]
+    losers = results[-10:][::-1]
+
+    lines = ["涨幅前十："]
+    for sym, price, chg in gainers:
+        lines.append(f"  {sym} ${price:.2f} ({chg:+.2f}%)")
+    lines.append("跌幅前十：")
+    for sym, price, chg in losers:
+        lines.append(f"  {sym} ${price:.2f} ({chg:+.2f}%)")
+
+    return "\n".join(lines)
+
+
+async def fetch_stock_movers(state: NasdaqReportState) -> dict:
+    t0 = time.perf_counter()
+    movers = await asyncio.to_thread(_fetch_movers_sync)
+    print(f"[nasdaq] fetch_stock_movers: {time.perf_counter() - t0:.2f}s")
+    print(f"[nasdaq] stock_movers:\n{movers}")
+    return {"stock_movers": movers}
+
+
 # ─── 报告生成节点 ──────────────────────────────────────────────────────────────
 
 _REPORT_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100盘前动态。
-根据以下新闻摘要，用中文生成一份简洁的盘前日报。
+根据以下新闻摘要和实时股票行情，用中文生成一份简洁的盘前日报。
 
 严格要求：
 - 总字数不超过1700字（为通知渠道留余量）
@@ -110,8 +160,8 @@ _REPORT_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100盘
 2.
 3.
 
-📈 重点个股动向
-（3-5只：股票名(代码) 涨跌幅，简短原因）
+📈 盘前涨跌幅前十（数据来自实时行情）
+{stock_movers}
 
 ⚠️ 风险提示
 （1-2点关键风险或待关注事件）
@@ -122,6 +172,7 @@ _REPORT_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100盘
 async def generate_report(state: NasdaqReportState) -> dict:
     t0 = time.perf_counter()
     articles = state["raw_articles"]
+    stock_movers = state.get("stock_movers", "（数据加载中）")
 
     context_parts = [
         f"标题：{a['title']}\n摘要：{a['body'][:200]}"
@@ -137,7 +188,7 @@ async def generate_report(state: NasdaqReportState) -> dict:
         max_retries=3,
     )
 
-    prompt = _REPORT_SYSTEM.replace("{date}", state["date"])
+    prompt = _REPORT_SYSTEM.replace("{date}", state["date"]).replace("{stock_movers}", stock_movers)
     messages = [
         SystemMessage(content=prompt),
         HumanMessage(content=f"今日盘前新闻摘要如下：\n\n{context}"),
