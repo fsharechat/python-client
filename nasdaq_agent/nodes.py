@@ -55,28 +55,36 @@ async def _ddg_search(query: str, max_results: int = 5) -> list[dict]:
 
 async def search_tech_news(state: NasdaqReportState) -> dict:
     t0 = time.perf_counter()
-    results = await _ddg_search(f"Nasdaq 100 technology stocks premarket {state['date']}")
+    query = f"Nasdaq 100 technology stocks premarket {state['date']}"
+    print(f"[nasdaq] search_tech query: {query}")
+    results = await _ddg_search(query)
     print(f"[nasdaq] search_tech: {time.perf_counter() - t0:.2f}s → {len(results)} results")
     return {"raw_articles": results}
 
 
 async def search_macro_news(state: NasdaqReportState) -> dict:
     t0 = time.perf_counter()
-    results = await _ddg_search(f"Federal Reserve interest rate US economy market {state['date']}")
+    query = f"Federal Reserve interest rate US economy market {state['date']}"
+    print(f"[nasdaq] search_macro query: {query}")
+    results = await _ddg_search(query)
     print(f"[nasdaq] search_macro: {time.perf_counter() - t0:.2f}s → {len(results)} results")
     return {"raw_articles": results}
 
 
 async def search_earnings(state: NasdaqReportState) -> dict:
     t0 = time.perf_counter()
-    results = await _ddg_search(f"tech stocks earnings results premarket today {state['date']}")
+    query = f"tech stocks earnings results premarket today {state['date']}"
+    print(f"[nasdaq] search_earnings query: {query}")
+    results = await _ddg_search(query)
     print(f"[nasdaq] search_earnings: {time.perf_counter() - t0:.2f}s → {len(results)} results")
     return {"raw_articles": results}
 
 
 async def search_futures(state: NasdaqReportState) -> dict:
     t0 = time.perf_counter()
-    results = await _ddg_search(f"QQQ Nasdaq futures premarket market open {state['date']}")
+    query = f"QQQ Nasdaq futures premarket market open {state['date']}"
+    print(f"[nasdaq] search_futures query: {query}")
+    results = await _ddg_search(query)
     print(f"[nasdaq] search_futures: {time.perf_counter() - t0:.2f}s → {len(results)} results")
     return {"raw_articles": results}
 
