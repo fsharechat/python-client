@@ -1,16 +1,14 @@
 """
 Nasdaq 100 盘前日报 Agent 各节点实现（全 async）。
 
-搜索使用 httpx 异步抓取 DuckDuckGo HTML，避免 ddgs/primp 在线程池中的 segfault。
+搜索使用 httpx 异步抓取 DuckDuckGo HTML。
+股票行情使用东方财富 push2 API（国内服务器直连稳定，无需认证，单次批量拉取）。
 并行节点（4路搜索 + 1路股票行情）→ generate_report → send_notification
 """
 
-import asyncio
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 import httpx
-import yfinance as yf
 from bs4 import BeautifulSoup
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -25,9 +23,16 @@ NOTIFY_MOBILES = [13900000001]
 MAX_REPORT_CHARS = 2048
 
 _DDG_URL = "https://html.duckduckgo.com/html/"
-_HEADERS = {
+_DDG_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
+}
+
+# 东方财富 push2 批量行情接口（纳斯达克 secid 前缀 105）
+_EM_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+_EM_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Referer": "https://www.eastmoney.com/",
 }
 
 
@@ -35,7 +40,7 @@ _HEADERS = {
 
 async def _ddg_search(query: str, max_results: int = 5) -> list[dict]:
     try:
-        async with httpx.AsyncClient(headers=_HEADERS, timeout=20, follow_redirects=True) as client:
+        async with httpx.AsyncClient(headers=_DDG_HEADERS, timeout=20, follow_redirects=True) as client:
             resp = await client.post(_DDG_URL, data={"q": query})
         soup = BeautifulSoup(resp.text, "lxml")
         results = []
@@ -55,7 +60,7 @@ async def _ddg_search(query: str, max_results: int = 5) -> list[dict]:
         return []
 
 
-# ─── 并行搜索节点（async，LangGraph ainvoke 并发执行） ────────────────────────
+# ─── 并行搜索节点 ──────────────────────────────────────────────────────────────
 
 async def search_tech_news(state: NasdaqReportState) -> dict:
     t0 = time.perf_counter()
@@ -93,48 +98,73 @@ async def search_futures(state: NasdaqReportState) -> dict:
     return {"raw_articles": results}
 
 
-# ─── 股票涨跌幅节点（yfinance，在独立线程中运行） ────────────────────────────
+# ─── 股票涨跌幅节点（东方财富 push2 API，国内稳定访问） ──────────────────────
 
-def _fetch_one(symbol: str) -> tuple | None:
-    """单支股票盘前涨跌幅，yfinance fast_info 在盘前时段 last_price 即为盘前价。"""
+async def _fetch_stock_data() -> tuple[list[tuple], str]:
+    """
+    调用东方财富 push2 批量行情接口，单次请求拉取全部 Nasdaq 100 成分股。
+    纳斯达克 secid 前缀为 105，f2=最新价，f3=涨跌幅%。
+    盘前时段 f2 即为盘前价，返回 (results[(symbol, price, change_pct)], label)。
+    """
+    secids = ",".join(f"105.{sym}" for sym in NASDAQ100_TICKERS)
+    params = {
+        "fltt": "2",   # 价格保留原始精度
+        "invt": "2",
+        "fields": "f12,f2,f3",  # f12=代码, f2=最新价, f3=涨跌幅%
+        "secids": secids,
+    }
+
+    async with httpx.AsyncClient(headers=_EM_HEADERS, timeout=20, trust_env=False) as client:
+        resp = await client.get(_EM_URL, params=params)
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"East Money API returned HTTP {resp.status_code}")
+
+    diff = resp.json().get("data", {}).get("diff", [])
+    items = diff if isinstance(diff, list) else list(diff.values())
+
+    results = []
+    for item in items:
+        code = item.get("f12", "")
+        price = item.get("f2")
+        chg = item.get("f3")
+        if code and price not in (None, "-", 0) and chg not in (None, "-"):
+            try:
+                results.append((code, float(price), float(chg)))
+            except (ValueError, TypeError):
+                pass
+
+    return results, "实时行情"
+
+
+async def fetch_stock_movers(state: NasdaqReportState) -> dict:
+    t0 = time.perf_counter()
+    print(f"[nasdaq] fetch_stock_movers: fetching {len(NASDAQ100_TICKERS)} tickers via East Money ...")
+
     try:
-        fi = yf.Ticker(symbol).fast_info
-        last = fi.last_price
-        prev = fi.regular_market_previous_close
-        if last and prev and prev > 0:
-            return (symbol, last, (last - prev) / prev * 100)
-    except Exception:
-        pass
-    return None
-
-
-def _fetch_movers_sync() -> str:
-    """用线程池并发拉取全部 Nasdaq 100 成分股盘前价，返回格式化的涨跌榜文本。"""
-    print(f"[nasdaq] fetch_stock_movers: fetching {len(NASDAQ100_TICKERS)} tickers ...")
-    with ThreadPoolExecutor(max_workers=20) as ex:
-        results = [r for r in ex.map(_fetch_one, NASDAQ100_TICKERS) if r]
+        results, label = await _fetch_stock_data()
+    except Exception as e:
+        print(f"[nasdaq] fetch_stock_movers failed: {e}")
+        return {"stock_movers": "（股票数据获取失败）"}
 
     if not results:
-        return "（盘前股票数据暂不可用）"
+        return {"stock_movers": "（股票数据暂不可用）"}
 
     results.sort(key=lambda x: x[2], reverse=True)
     gainers = results[:10]
     losers = results[-10:][::-1]
 
-    lines = ["涨幅前十："]
-    for sym, price, chg in gainers:
-        lines.append(f"  {sym} ${price:.2f} ({chg:+.2f}%)")
-    lines.append("跌幅前十：")
-    for sym, price, chg in losers:
-        lines.append(f"  {sym} ${price:.2f} ({chg:+.2f}%)")
+    def _table(rows: list[tuple]) -> str:
+        header = "| 代码 | 价格 | 涨跌幅 |\n|:---|---:|---:|"
+        body = "\n".join(f"| {sym} | ${price:.2f} | {chg:+.2f}% |" for sym, price, chg in rows)
+        return header + "\n" + body
 
-    return "\n".join(lines)
-
-
-async def fetch_stock_movers(state: NasdaqReportState) -> dict:
-    t0 = time.perf_counter()
-    movers = await asyncio.to_thread(_fetch_movers_sync)
-    print(f"[nasdaq] fetch_stock_movers: {time.perf_counter() - t0:.2f}s")
+    movers = (
+        f"**涨幅前十（{label}）**\n\n{_table(gainers)}\n\n"
+        f"**跌幅前十（{label}）**\n\n{_table(losers)}"
+    )
+    elapsed = time.perf_counter() - t0
+    print(f"[nasdaq] fetch_stock_movers: {elapsed:.2f}s → {len(results)} tickers ({label})")
     print(f"[nasdaq] stock_movers:\n{movers}")
     return {"stock_movers": movers}
 
