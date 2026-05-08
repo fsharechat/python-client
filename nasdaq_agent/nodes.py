@@ -114,7 +114,7 @@ async def _fetch_stock_data() -> tuple[list[tuple], str]:
         "secids": secids,
     }
 
-    async with httpx.AsyncClient(headers=_EM_HEADERS, timeout=20, trust_env=False) as client:
+    async with httpx.AsyncClient(headers=_EM_HEADERS, timeout=20, trust_env=False, follow_redirects=True) as client:
         resp = await client.get(_EM_URL, params=params)
 
     print(f"[nasdaq] East Money HTTP {resp.status_code}, body[:200]: {resp.text[:200]}")
