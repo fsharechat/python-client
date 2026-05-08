@@ -31,8 +31,7 @@ async def _run_nasdaq_report(nasdaq_graph) -> None:
     today = date_type.today().isoformat()
     print(f"[nasdaq] Starting daily report for {today} ...")
     initial = {"date": today, "raw_articles": [], "report_content": "", "send_status": ""}
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, nasdaq_graph.invoke, initial)
+    await nasdaq_graph.ainvoke(initial)
     print("[nasdaq] Daily report complete.")
 
 
