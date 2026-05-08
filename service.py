@@ -10,6 +10,10 @@ Endpoints:
 
 import asyncio
 import os
+import sys
+
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import date as date_type

@@ -197,7 +197,8 @@ python service.py
 
 ```bash
 # 启动（日志写入 service.log）
-nohup python3.11 service.py > service.log 2>&1 &
+# -u 强制无缓冲输出，确保 print 日志实时写入文件
+nohup python3.11 -u service.py > service.log 2>&1 &
 
 # 查看实时日志
 tail -f service.log
@@ -206,7 +207,7 @@ tail -f service.log
 pgrep -fa "service.py"
 
 # 重启（停止旧进程后重新启动）
-pkill -f "service.py" && sleep 1 && nohup python3.11 service.py > service.log 2>&1 &
+pkill -f "service.py" && sleep 1 && nohup python3.11 -u service.py > service.log 2>&1 &
 ```
 
 ```bash
