@@ -35,7 +35,7 @@ from nasdaq_agent.graph import build_nasdaq_graph, build_afterhours_graph
 async def _run_nasdaq_report(nasdaq_graph) -> None:
     today = date_type.today().isoformat()
     print(f"[nasdaq] Starting daily report for {today} ...")
-    initial = {"date": today, "raw_articles": [], "stock_movers": "", "report_content": "", "send_status": ""}
+    initial = {"date": today, "raw_articles": [], "index_summary": "", "stock_movers": "", "report_content": "", "send_status": ""}
     try:
         await nasdaq_graph.ainvoke(initial)
         print("[nasdaq] Daily report complete.")
@@ -45,7 +45,7 @@ async def _run_nasdaq_report(nasdaq_graph) -> None:
 async def _run_afterhours_report(afterhours_graph) -> None:
     today = date_type.today().isoformat()
     print(f"[afterhours] Starting afterhours report for {today} ...")
-    initial = {"date": today, "raw_articles": [], "stock_movers": "", "report_content": "", "send_status": ""}
+    initial = {"date": today, "raw_articles": [], "index_summary": "", "stock_movers": "", "report_content": "", "send_status": ""}
     try:
         await afterhours_graph.ainvoke(initial)
         print("[afterhours] Afterhours report complete.")

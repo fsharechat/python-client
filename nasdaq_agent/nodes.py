@@ -173,6 +173,51 @@ def _sector_movers_table(all_results: list[tuple]) -> str:
     return "\n\n".join(parts)
 
 
+async def _fetch_index_data() -> str:
+    """获取纳指100和标普500当日收盘数据，返回 markdown 表格字符串。失败时返回空串。"""
+    params = {
+        "fltt": "2",
+        "invt": "2",
+        "fields": "f12,f2,f3,f4",   # f12=代码, f2=最新值, f3=涨跌幅%, f4=涨跌点
+        "secids": "100.NDX,100.SPX",
+    }
+    name_map = {"NDX": "纳斯达克100", "SPX": "标普500"}
+    order = ["NDX", "SPX"]
+
+    try:
+        async with httpx.AsyncClient(headers=_EM_HEADERS, timeout=10, trust_env=False, follow_redirects=True) as client:
+            resp = await client.get(_EM_URL, params=params)
+        diff = resp.json().get("data", {}).get("diff", [])
+        items = diff if isinstance(diff, list) else list(diff.values())
+
+        row_map: dict[str, str] = {}
+        for item in items:
+            code = item.get("f12", "")
+            val = item.get("f2")
+            chg_pct = item.get("f3")
+            chg_pts = item.get("f4")
+            if code not in name_map or val in (None, "-") or chg_pct in (None, "-"):
+                continue
+            try:
+                val_f = float(val)
+                pct_f = float(chg_pct)
+                pts_f = float(chg_pts) if chg_pts not in (None, "-") else 0.0
+                sign = "+" if pct_f >= 0 else ""
+                row_map[code] = f"| {name_map[code]} | {val_f:,.2f} | {sign}{pts_f:.2f} | {sign}{pct_f:.2f}% |"
+            except (ValueError, TypeError):
+                pass
+
+        rows = [row_map[c] for c in order if c in row_map]
+        if not rows:
+            return ""
+        header = "| 指数 | 最新值 | 涨跌点 | 涨跌幅 |\n|:---|---:|---:|---:|"
+        return "📊 主要指数\n\n" + header + "\n" + "\n".join(rows)
+
+    except Exception as e:
+        print(f"[nasdaq] _fetch_index_data failed: {e}")
+        return ""
+
+
 async def _fetch_stock_data() -> tuple[list[tuple], str]:
     """
     调用东方财富 push2 批量行情接口，单次请求拉取全部 Nasdaq 100 成分股。
@@ -216,8 +261,11 @@ async def _fetch_stock_data() -> tuple[list[tuple], str]:
 
 
 async def fetch_stock_movers(state: NasdaqReportState) -> dict:
+    import asyncio
     t0 = time.perf_counter()
-    print(f"[nasdaq] fetch_stock_movers: fetching {len(NASDAQ100_TICKERS)} tickers via East Money ...")
+    print(f"[nasdaq] fetch_stock_movers: fetching {len(NASDAQ100_TICKERS)} tickers + indices via East Money ...")
+
+    index_task = asyncio.create_task(_fetch_index_data())
 
     try:
         results, label = await _fetch_stock_data()
@@ -225,15 +273,18 @@ async def fetch_stock_movers(state: NasdaqReportState) -> dict:
         import traceback
         print(f"[nasdaq] fetch_stock_movers failed: {e}")
         print(traceback.format_exc())
-        return {"stock_movers": "（股票数据获取失败）"}
+        index_summary = await index_task
+        return {"index_summary": index_summary, "stock_movers": "（股票数据获取失败）"}
+
+    index_summary = await index_task
 
     if not results:
-        return {"stock_movers": "（股票数据暂不可用）"}
+        return {"index_summary": index_summary, "stock_movers": "（股票数据暂不可用）"}
 
     movers = _sector_movers_table(results)
     elapsed = time.perf_counter() - t0
     print(f"[nasdaq] fetch_stock_movers: {elapsed:.2f}s → {len(results)} tickers ({label})")
-    return {"stock_movers": movers}
+    return {"index_summary": index_summary, "stock_movers": movers}
 
 
 # ─── 报告生成节点 ──────────────────────────────────────────────────────────────
@@ -324,15 +375,14 @@ async def generate_report(state: NasdaqReportState) -> dict:
     t0 = time.perf_counter()
     prompt = _PREMARKET_SYSTEM.replace("{date}", state.get("date") or "")
     narrative = await _generate_narrative(state, prompt)
+    index_summary = state.get("index_summary", "")
     stock_movers = state.get("stock_movers", "（数据加载中）")
 
-    report = (
-        f"{narrative}\n\n"
-        f"---\n\n"
-        f"📈 板块涨跌榜\n\n"
-        f"{stock_movers}\n\n"
-        f"来源：Reuters/CNBC/MarketWatch"
-    )
+    sections = [narrative, "---"]
+    if index_summary:
+        sections += [index_summary, "---"]
+    sections += ["📈 板块涨跌榜", stock_movers, "来源：Reuters/CNBC/MarketWatch"]
+    report = "\n\n".join(sections)
 
     print(f"[nasdaq] generate_report: {time.perf_counter() - t0:.2f}s → {len(report)} chars total")
     return {"report_content": report}
@@ -343,15 +393,14 @@ async def generate_afterhours_report(state: NasdaqReportState) -> dict:
     t0 = time.perf_counter()
     prompt = _AFTERHOURS_SYSTEM.replace("{date}", state.get("date") or "")
     narrative = await _generate_narrative(state, prompt)
+    index_summary = state.get("index_summary", "")
     stock_movers = state.get("stock_movers", "（数据加载中）")
 
-    report = (
-        f"{narrative}\n\n"
-        f"---\n\n"
-        f"📈 板块涨跌榜\n\n"
-        f"{stock_movers}\n\n"
-        f"来源：Reuters/CNBC/MarketWatch"
-    )
+    sections = [narrative, "---"]
+    if index_summary:
+        sections += [index_summary, "---"]
+    sections += ["📈 板块涨跌榜", stock_movers, "来源：Reuters/CNBC/MarketWatch"]
+    report = "\n\n".join(sections)
 
     print(f"[nasdaq] generate_afterhours_report: {time.perf_counter() - t0:.2f}s → {len(report)} chars total")
     return {"report_content": report}
