@@ -1,11 +1,11 @@
-# 纳斯达克100成分股列表（截至2026年4月）
+# 纳斯达克100成分股列表（截至2026年5月，含4月20日调整：+SNDK -TEAM）
 NASDAQ100_TICKERS = [
     "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "GOOG", "TSLA", "AVGO", "COST",
     "NFLX", "AMD", "ASML", "LIN", "ADBE", "QCOM", "INTU", "AMAT", "BKNG", "ISRG",
     "VRTX", "TXN", "ADP", "PANW", "MU", "GILD", "LRCX", "ADI", "REGN", "KLAC",
     "SNPS", "CDNS", "MDLZ", "SBUX", "INTC", "CTAS", "ORLY", "NXPI", "MRVL", "CEG",
     "PYPL", "CRWD", "WDAY", "CSX", "ABNB", "PAYX", "DXCM", "IDXX", "ODFL", "ROST",
-    "FAST", "VRSK", "PCAR", "AEP", "CHTR", "FANG", "MNST", "TEAM", "MELI", "PDD",
+    "FAST", "VRSK", "PCAR", "AEP", "CHTR", "FANG", "MNST", "SNDK", "MELI", "PDD",
     "GEHC", "DDOG", "ARM", "ZS", "ROP", "KDP", "CPRT", "CSGP", "EXC", "XEL",
     "BKR", "CTSH", "MCHP", "EA", "WBD", "KHC", "TTWO", "FTNT", "APP", "PLTR",
     "AXON", "DASH", "CSCO", "CMCSA", "TMUS", "AMGN", "ALNY", "INSM", "ADSK", "HON",
@@ -20,7 +20,7 @@ NASDAQ100_SECTOR_MAP: dict[str, str] = {
     "KLAC": "半导体", "NXPI": "半导体", "MRVL": "半导体", "MCHP": "半导体",
     "ADI": "半导体", "MU": "半导体", "ASML": "半导体", "ARM": "半导体",
     "SNPS": "半导体", "CDNS": "半导体", "MPWR": "半导体",
-    "STX": "半导体", "WDC": "半导体",
+    "STX": "半导体", "WDC": "半导体", "SNDK": "半导体",
     # 大型科技（7只）
     "AAPL": "大型科技", "MSFT": "大型科技", "GOOGL": "大型科技",
     "GOOG": "大型科技", "META": "大型科技", "AMZN": "大型科技",
@@ -28,9 +28,9 @@ NASDAQ100_SECTOR_MAP: dict[str, str] = {
     # 软件/SaaS（14只）
     "ADBE": "软件/SaaS", "INTU": "软件/SaaS", "PANW": "软件/SaaS",
     "CRWD": "软件/SaaS", "WDAY": "软件/SaaS", "DDOG": "软件/SaaS",
-    "ZS": "软件/SaaS", "FTNT": "软件/SaaS", "TEAM": "软件/SaaS",
-    "CTSH": "软件/SaaS", "ROP": "软件/SaaS", "CSGP": "软件/SaaS",
-    "ADSK": "软件/SaaS", "TRI": "软件/SaaS",
+    "ZS": "软件/SaaS", "FTNT": "软件/SaaS", "CTSH": "软件/SaaS",
+    "ROP": "软件/SaaS", "CSGP": "软件/SaaS", "ADSK": "软件/SaaS",
+    "TRI": "软件/SaaS",
     # 互联网/电商（7只）
     "BKNG": "互联网/电商", "ABNB": "互联网/电商", "MELI": "互联网/电商",
     "PDD": "互联网/电商", "DASH": "互联网/电商", "APP": "互联网/电商",
