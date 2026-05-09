@@ -139,7 +139,7 @@ async def search_tomorrow_preview(state: NasdaqReportState) -> dict:
 def _sector_movers_table(all_results: list[tuple]) -> str:
     """
     all_results: [(sym, price, chg), ...] 全量行情数据
-    按 SECTOR_ORDER 分组，每板块展示涨幅前N和跌幅前N（N=min(10, 板块内有数据的股票数）。
+    按 SECTOR_ORDER 分组，每板块展示实际上涨（chg>0）前10和实际下跌（chg<0）前10。
     """
     # 按板块分桶
     buckets: dict[str, list[tuple]] = {s: [] for s in SECTOR_ORDER}
@@ -163,18 +163,12 @@ def _sector_movers_table(all_results: list[tuple]) -> str:
         stocks = buckets.get(sector, [])
         if not stocks:
             continue
-        stocks_sorted = sorted(stocks, key=lambda x: x[2], reverse=True)
-        total = len(stocks_sorted)
-        if total <= 10:
-            # small sector — show one full sorted table
-            parts.append(f"▎{sector}（全板块排名）\n\n{_table(stocks_sorted)}")
-        else:
-            # ensure non-overlapping: each side gets at most half the stocks, capped at 10
-            n = min(10, total // 2)
-            gainers = stocks_sorted[:n]
-            losers = stocks_sorted[-n:][::-1]
-            parts.append(f"▎{sector}（涨幅前{n}）\n\n{_table(gainers)}")
-            parts.append(f"▎{sector}（跌幅前{n}）\n\n{_table(losers)}")
+        gainers = sorted([s for s in stocks if s[2] > 0], key=lambda x: x[2], reverse=True)[:10]
+        losers = sorted([s for s in stocks if s[2] < 0], key=lambda x: x[2])[:10]
+        if gainers:
+            parts.append(f"▎{sector}（涨幅前{len(gainers)}）\n\n{_table(gainers)}")
+        if losers:
+            parts.append(f"▎{sector}（跌幅前{len(losers)}）\n\n{_table(losers)}")
 
     return "\n\n".join(parts)
 
