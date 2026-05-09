@@ -1,9 +1,10 @@
 """
-Nasdaq 100 盘前日报 Agent 各节点实现（全 async）。
+Nasdaq 100 日报 Agent 各节点实现（全 async）。
 
 搜索使用 httpx 异步抓取 DuckDuckGo HTML。
 股票行情使用东方财富 push2 API（国内服务器直连稳定，无需认证，单次批量拉取）。
-并行节点（4路搜索 + 1路股票行情）→ generate_report → send_notification
+盘前：4路搜索 + 行情 → generate_report → send_notification
+盘后：4路盘后搜索 + 行情 → generate_afterhours_report → send_notification
 """
 
 import time
@@ -16,11 +17,10 @@ from langchain_core.output_parsers import StrOutputParser
 
 from config import ANTHROPIC_API_KEY, GENERATE_MODEL
 from nasdaq_agent.state import NasdaqReportState
-from nasdaq_agent.tickers import NASDAQ100_TICKERS
+from nasdaq_agent.tickers import NASDAQ100_TICKERS, NASDAQ100_SECTOR_MAP, SECTOR_ORDER
 
 NOTIFY_URL = "https://backend-http.fsharechat.cn/imopenapi/pushNotificationByMobile"
 NOTIFY_MOBILES = [13900000001]
-MAX_REPORT_CHARS = 2048
 
 _DDG_URL = "https://html.duckduckgo.com/html/"
 _DDG_HEADERS = {
@@ -98,7 +98,86 @@ async def search_futures(state: NasdaqReportState) -> dict:
     return {"raw_articles": results}
 
 
+async def search_earnings_results(state: NasdaqReportState) -> dict:
+    t0 = time.perf_counter()
+    query = f"tech stocks earnings results after close beat miss {state['date']}"
+    print(f"[nasdaq] search_earnings_results query: {query}")
+    results = await _ddg_search(query)
+    print(f"[nasdaq] search_earnings_results: {time.perf_counter() - t0:.2f}s → {len(results)} results")
+    return {"raw_articles": results}
+
+
+async def search_afterhours_movers(state: NasdaqReportState) -> dict:
+    t0 = time.perf_counter()
+    query = f"Nasdaq after hours movers stock gains losses {state['date']}"
+    print(f"[nasdaq] search_afterhours_movers query: {query}")
+    results = await _ddg_search(query)
+    print(f"[nasdaq] search_afterhours_movers: {time.perf_counter() - t0:.2f}s → {len(results)} results")
+    return {"raw_articles": results}
+
+
+async def search_closing_summary(state: NasdaqReportState) -> dict:
+    t0 = time.perf_counter()
+    query = f"Nasdaq 100 stock market closing recap today {state['date']}"
+    print(f"[nasdaq] search_closing_summary query: {query}")
+    results = await _ddg_search(query)
+    print(f"[nasdaq] search_closing_summary: {time.perf_counter() - t0:.2f}s → {len(results)} results")
+    return {"raw_articles": results}
+
+
+async def search_tomorrow_preview(state: NasdaqReportState) -> dict:
+    t0 = time.perf_counter()
+    query = f"stock market outlook tomorrow economic calendar earnings preview {state['date']}"
+    print(f"[nasdaq] search_tomorrow_preview query: {query}")
+    results = await _ddg_search(query)
+    print(f"[nasdaq] search_tomorrow_preview: {time.perf_counter() - t0:.2f}s → {len(results)} results")
+    return {"raw_articles": results}
+
+
 # ─── 股票涨跌幅节点（东方财富 push2 API，国内稳定访问） ──────────────────────
+
+def _sector_movers_table(all_results: list[tuple]) -> str:
+    """
+    all_results: [(sym, price, chg), ...] 全量行情数据
+    按 SECTOR_ORDER 分组，每板块展示涨幅前N和跌幅前N（N=min(10, 板块内有数据的股票数）。
+    """
+    # 按板块分桶
+    buckets: dict[str, list[tuple]] = {s: [] for s in SECTOR_ORDER}
+    for sym, price, chg in all_results:
+        sector = NASDAQ100_SECTOR_MAP.get(sym)
+        if sector is None:
+            print(f"[nasdaq] warning: {sym} not in NASDAQ100_SECTOR_MAP, skipping")
+            continue
+        buckets[sector].append((sym, price, chg))
+
+    def _table(rows: list[tuple]) -> str:
+        header = "| 代码 | 价格 | 涨跌幅 |\n|:---|---:|---:|"
+        body = "\n".join(
+            f"| {sym} | ${price:.2f} | {chg:+.2f}% |"
+            for sym, price, chg in rows
+        )
+        return header + "\n" + body
+
+    parts = []
+    for sector in SECTOR_ORDER:
+        stocks = buckets.get(sector, [])
+        if not stocks:
+            continue
+        stocks_sorted = sorted(stocks, key=lambda x: x[2], reverse=True)
+        total = len(stocks_sorted)
+        if total <= 10:
+            # small sector — show one full sorted table
+            parts.append(f"▎{sector}（全板块排名）\n\n{_table(stocks_sorted)}")
+        else:
+            # ensure non-overlapping: each side gets at most half the stocks, capped at 10
+            n = min(10, total // 2)
+            gainers = stocks_sorted[:n]
+            losers = stocks_sorted[-n:][::-1]
+            parts.append(f"▎{sector}（涨幅前{n}）\n\n{_table(gainers)}")
+            parts.append(f"▎{sector}（跌幅前{n}）\n\n{_table(losers)}")
+
+    return "\n\n".join(parts)
+
 
 async def _fetch_stock_data() -> tuple[list[tuple], str]:
     """
@@ -157,33 +236,21 @@ async def fetch_stock_movers(state: NasdaqReportState) -> dict:
     if not results:
         return {"stock_movers": "（股票数据暂不可用）"}
 
-    results.sort(key=lambda x: x[2], reverse=True)
-    gainers = results[:10]
-    losers = results[-10:][::-1]
-
-    def _table(rows: list[tuple]) -> str:
-        header = "| 代码 | 价格 | 涨跌幅 |\n|:---|---:|---:|"
-        body = "\n".join(f"| {sym} | ${price:.2f} | {chg:+.2f}% |" for sym, price, chg in rows)
-        return header + "\n" + body
-
-    movers = (
-        f"**涨幅前十（{label}）**\n\n{_table(gainers)}\n\n"
-        f"**跌幅前十（{label}）**\n\n{_table(losers)}"
-    )
+    movers = _sector_movers_table(results)
     elapsed = time.perf_counter() - t0
     print(f"[nasdaq] fetch_stock_movers: {elapsed:.2f}s → {len(results)} tickers ({label})")
-    print(f"[nasdaq] stock_movers:\n{movers}")
     return {"stock_movers": movers}
 
 
 # ─── 报告生成节点 ──────────────────────────────────────────────────────────────
 
-_REPORT_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100盘前动态。
-根据以下新闻摘要和实时股票行情，用中文生成一份简洁的盘前日报。
+_PREMARKET_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100盘前动态。
+根据以下新闻摘要，用中文生成盘前日报的叙述部分。
 
 严格要求：
-- 总字数不超过1700字（为通知渠道留余量）
+- 总字数不超过800字
 - 信息客观准确，不要编造数据
+- 只生成叙述部分，不要包含股票数据表格（表格将单独附加）
 - 使用以下固定格式，不要偏离
 
 输出格式：
@@ -197,19 +264,37 @@ _REPORT_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100盘
 2.
 3.
 
-📈 盘前涨跌幅前十（数据来自实时行情）
-{stock_movers}
-
 ⚠️ 风险提示
-（1-2点关键风险或待关注事件）
+（1-2点关键风险或待关注事件）"""
 
-来源：Reuters/CNBC/MarketWatch"""
+_AFTERHOURS_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100盘后动态。
+根据以下新闻摘要，用中文生成盘后日报的叙述部分。
+
+严格要求：
+- 总字数不超过800字
+- 信息客观准确，不要编造数据
+- 只生成叙述部分，不要包含股票数据表格（表格将单独附加）
+- 使用以下固定格式，不要偏离
+
+输出格式：
+【纳斯达克100盘后日报】{date}
+
+📊 收盘概况
+（2-3句：纳指收盘涨跌幅、当日整体走势）
+
+🔥 盘后三大焦点
+1.（财报结果或重大公告）
+2.（盘后异动个股及原因）
+3.（明日前瞻或关键数据）
+
+⚠️ 关注事项
+（1-2点：明日待关注风险或催化剂）"""
 
 
-async def generate_report(state: NasdaqReportState) -> dict:
+async def _generate_narrative(state: NasdaqReportState, system_prompt: str) -> str:
+    """调用 LLM 生成叙述部分（不含股票表格），返回叙述字符串。"""
     t0 = time.perf_counter()
     articles = state["raw_articles"]
-    stock_movers = state.get("stock_movers", "（数据加载中）")
 
     context_parts = [
         f"标题：{a['title']}\n摘要：{a['body'][:200]}"
@@ -221,22 +306,60 @@ async def generate_report(state: NasdaqReportState) -> dict:
     llm = ChatAnthropic(
         model=GENERATE_MODEL,
         anthropic_api_key=ANTHROPIC_API_KEY,
-        max_tokens=1200,
+        max_tokens=900,
         max_retries=3,
     )
 
-    prompt = _REPORT_SYSTEM.replace("{date}", state["date"]).replace("{stock_movers}", stock_movers)
     messages = [
-        SystemMessage(content=prompt),
-        HumanMessage(content=f"今日盘前新闻摘要如下：\n\n{context}"),
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=f"今日新闻摘要如下：\n\n{context}"),
     ]
 
-    report = await (llm | StrOutputParser()).ainvoke(messages)
+    try:
+        narrative = await (llm | StrOutputParser()).ainvoke(messages)
+    except Exception as e:
+        print(f"[nasdaq] _generate_narrative failed: {e}")
+        return "（今日叙述生成失败，请稍后重试）"
 
-    if len(report) > MAX_REPORT_CHARS:
-        report = report[: MAX_REPORT_CHARS - 3] + "..."
+    print(f"[nasdaq] _generate_narrative: {time.perf_counter() - t0:.2f}s → {len(narrative)} chars")
+    return narrative
 
-    print(f"[nasdaq] generate_report: {time.perf_counter() - t0:.2f}s → {len(report)} chars")
+
+async def generate_report(state: NasdaqReportState) -> dict:
+    """盘前日报：LLM生成叙述 + 程序拼接板块涨跌表格。"""
+    t0 = time.perf_counter()
+    prompt = _PREMARKET_SYSTEM.replace("{date}", state.get("date") or "")
+    narrative = await _generate_narrative(state, prompt)
+    stock_movers = state.get("stock_movers", "（数据加载中）")
+
+    report = (
+        f"{narrative}\n\n"
+        f"---\n\n"
+        f"📈 板块涨跌榜\n\n"
+        f"{stock_movers}\n\n"
+        f"来源：Reuters/CNBC/MarketWatch"
+    )
+
+    print(f"[nasdaq] generate_report: {time.perf_counter() - t0:.2f}s → {len(report)} chars total")
+    return {"report_content": report}
+
+
+async def generate_afterhours_report(state: NasdaqReportState) -> dict:
+    """盘后日报：LLM生成叙述 + 程序拼接板块涨跌表格。"""
+    t0 = time.perf_counter()
+    prompt = _AFTERHOURS_SYSTEM.replace("{date}", state.get("date") or "")
+    narrative = await _generate_narrative(state, prompt)
+    stock_movers = state.get("stock_movers", "（数据加载中）")
+
+    report = (
+        f"{narrative}\n\n"
+        f"---\n\n"
+        f"📈 板块涨跌榜\n\n"
+        f"{stock_movers}\n\n"
+        f"来源：Reuters/CNBC/MarketWatch"
+    )
+
+    print(f"[nasdaq] generate_afterhours_report: {time.perf_counter() - t0:.2f}s → {len(report)} chars total")
     return {"report_content": report}
 
 

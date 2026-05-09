@@ -2,10 +2,11 @@
 FastAPI service exposing the 飞享IM Q&A chatbot.
 
 Endpoints:
-  POST /ask              – single-turn Q&A
-  POST /stream           – streaming Q&A (SSE)
-  GET  /health           – liveness probe
-  POST /nasdaq/trigger   – manually trigger Nasdaq daily report
+  POST /ask                        – single-turn Q&A
+  POST /stream                     – streaming Q&A (SSE)
+  GET  /health                     – liveness probe
+  POST /nasdaq/trigger             – manually trigger Nasdaq premarket report
+  POST /nasdaq/trigger/afterhours  – manually trigger Nasdaq afterhours report
 """
 
 import asyncio
@@ -26,7 +27,7 @@ from pydantic import BaseModel
 from config import DOCS_PERSIST_PATH
 from graph import build_graph, QAState
 from ingest import build_retriever, load_retriever
-from nasdaq_agent.graph import build_nasdaq_graph
+from nasdaq_agent.graph import build_nasdaq_graph, build_afterhours_graph
 
 
 # ─── Nasdaq report runner ─────────────────────────────────────────────────────
@@ -35,8 +36,21 @@ async def _run_nasdaq_report(nasdaq_graph) -> None:
     today = date_type.today().isoformat()
     print(f"[nasdaq] Starting daily report for {today} ...")
     initial = {"date": today, "raw_articles": [], "stock_movers": "", "report_content": "", "send_status": ""}
-    await nasdaq_graph.ainvoke(initial)
-    print("[nasdaq] Daily report complete.")
+    try:
+        await nasdaq_graph.ainvoke(initial)
+        print("[nasdaq] Daily report complete.")
+    except Exception as e:
+        print(f"[nasdaq] Daily report failed: {e}")
+
+async def _run_afterhours_report(afterhours_graph) -> None:
+    today = date_type.today().isoformat()
+    print(f"[afterhours] Starting afterhours report for {today} ...")
+    initial = {"date": today, "raw_articles": [], "stock_movers": "", "report_content": "", "send_status": ""}
+    try:
+        await afterhours_graph.ainvoke(initial)
+        print("[afterhours] Afterhours report complete.")
+    except Exception as e:
+        print(f"[afterhours] Afterhours report failed: {e}")
 
 
 # ─── App lifecycle ────────────────────────────────────────────────────────────
@@ -56,12 +70,14 @@ async def lifespan(app: FastAPI):
     app_state["graph"] = build_graph(retriever)
     print("Q&A service ready.")
 
-    # ── Nasdaq 盘前日报定时任务 ──────────────────────────────────────────────
+    # ── Nasdaq 日报定时任务（盘前 ET 08:00 + 盘后 ET 16:30） ────────────────
     nasdaq_graph = build_nasdaq_graph()
     app_state["nasdaq_graph"] = nasdaq_graph
 
+    afterhours_graph = build_afterhours_graph()
+    app_state["afterhours_graph"] = afterhours_graph
+
     scheduler = AsyncIOScheduler(timezone="America/New_York")
-    # 每个工作日 ET 8:00 AM（自动处理夏/冬令时）
     scheduler.add_job(
         _run_nasdaq_report,
         "cron",
@@ -70,9 +86,17 @@ async def lifespan(app: FastAPI):
         minute=0,
         args=[nasdaq_graph],
     )
+    scheduler.add_job(
+        _run_afterhours_report,
+        "cron",
+        day_of_week="mon-fri",
+        hour=16,
+        minute=30,
+        args=[afterhours_graph],
+    )
     scheduler.start()
     app_state["scheduler"] = scheduler
-    print("Nasdaq scheduler started (ET 08:00, Mon–Fri).")
+    print("Nasdaq scheduler started (ET 08:00 premarket / ET 16:30 afterhours, Mon–Fri).")
 
     yield
 
@@ -197,6 +221,13 @@ async def trigger_nasdaq_report():
     """立即触发一次纳斯达克盘前日报（用于测试或手动补发）。"""
     nasdaq_graph = app_state["nasdaq_graph"]
     asyncio.create_task(_run_nasdaq_report(nasdaq_graph))
+    return {"status": "triggered", "date": date_type.today().isoformat()}
+
+@app.post("/nasdaq/trigger/afterhours")
+async def trigger_afterhours_report():
+    """立即触发一次纳斯达克盘后日报（用于测试或手动补发）。"""
+    afterhours_graph = app_state["afterhours_graph"]
+    asyncio.create_task(_run_afterhours_report(afterhours_graph))
     return {"status": "triggered", "date": date_type.today().isoformat()}
 
 
