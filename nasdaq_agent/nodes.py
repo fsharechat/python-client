@@ -15,12 +15,11 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 
-from config import ANTHROPIC_API_KEY, GENERATE_MODEL
+from config import ANTHROPIC_API_KEY, GENERATE_MODEL, NOTIFY_MOBILES
 from nasdaq_agent.state import NasdaqReportState
 from nasdaq_agent.tickers import NASDAQ100_TICKERS, NASDAQ100_SECTOR_MAP, SECTOR_ORDER
 
 NOTIFY_URL = "https://backend-http.fsharechat.cn/imopenapi/pushNotificationByMobile"
-NOTIFY_MOBILES = [13900000001]
 
 _DDG_URL = "https://html.duckduckgo.com/html/"
 _DDG_HEADERS = {

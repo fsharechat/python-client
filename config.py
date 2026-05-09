@@ -5,6 +5,11 @@ load_dotenv()
 
 # Anthropic
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# 纳斯达克日报推送手机号（飞享IM，多个用英文逗号分隔）
+NOTIFY_MOBILES: list[int] = [
+    int(m.strip()) for m in os.getenv("NOTIFY_MOBILES", "").split(",") if m.strip().isdigit()
+]
 CLAUDE_MODEL = "claude-opus-4-7"
 CLASSIFY_MODEL = "claude-haiku-4-5-20251001"  # lightweight model for simple classification
 GENERATE_MODEL = "claude-sonnet-4-6"          # balanced speed/quality for answer generation
