@@ -42,6 +42,12 @@ _YF_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# 东方财富单只股票行情接口
+_EM_STOCK_URL = "https://push2.eastmoney.com/api/qt/stock/get"
+
+# 美股七姐妹（盘前日报单独展示）
+MAG7 = ["AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA"]
+
 
 # ─── 搜索工具（纯 async，无线程） ─────────────────────────────────────────────
 
@@ -355,6 +361,121 @@ def _merge_stock_results(
     return merged
 
 
+async def _fetch_em_single(symbol: str, prefix: str = "105") -> tuple[float, float] | None:
+    """东方财富单只股票行情，返回 (price, chg_pct) 或 None。"""
+    params = {"secid": f"{prefix}.{symbol}", "fields": "f12,f2,f3", "invt": "2"}
+    try:
+        async with httpx.AsyncClient(headers=_EM_HEADERS, timeout=8, trust_env=False, follow_redirects=True) as client:
+            resp = await client.get(_EM_STOCK_URL, params=params)
+        d = resp.json().get("data") or {}
+        p, c = d.get("f2"), d.get("f3")
+        if p not in (None, "-", 0) and c not in (None, "-"):
+            return float(p), float(c)
+    except Exception as e:
+        print(f"[nasdaq] EM single {symbol}: {e}")
+    return None
+
+
+async def _fetch_premarket_index_individual() -> str:
+    """
+    盘前专用：逐个请求 QQQ/SPY 盘前价。
+    Yahoo Finance 优先（有明确 preMarketPrice 字段），东方财富兜底。
+    """
+    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
+    em_prefix = {"QQQ": "105", "SPY": "106"}
+    order = ["QQQ", "SPY"]
+
+    row_map: dict[str, str] = {}
+    try:
+        async with httpx.AsyncClient(headers=_YF_HEADERS, timeout=10, trust_env=False) as client:
+            resp = await client.get(_YF_QUOTE_URL, params={"symbols": "QQQ,SPY"})
+        for q in resp.json().get("quoteResponse", {}).get("result", []):
+            sym = q.get("symbol", "")
+            if sym not in name_map:
+                continue
+            pre_p = q.get("preMarketPrice")
+            pre_c = q.get("preMarketChangePercent")
+            pre_pts = q.get("preMarketChange")
+            reg_p = q.get("regularMarketPrice")
+            reg_c = q.get("regularMarketChangePercent", 0.0)
+            reg_pts = q.get("regularMarketChange", 0.0)
+            price = pre_p if pre_p is not None else reg_p
+            chg = pre_c if pre_c is not None else reg_c
+            pts = pre_pts if pre_pts is not None else reg_pts
+            if price is not None:
+                s = "+" if (chg or 0) >= 0 else ""
+                ps = "+" if (pts or 0) >= 0 else ""
+                row_map[sym] = f"| {name_map[sym]} | {price:,.2f} | {ps}{pts:.2f} | {s}{chg:.2f}% |"
+    except Exception as e:
+        print(f"[nasdaq] premarket index Yahoo failed: {e}")
+
+    for sym in order:
+        if sym not in row_map:
+            data = await _fetch_em_single(sym, em_prefix[sym])
+            if data:
+                price, chg = data
+                s = "+" if chg >= 0 else ""
+                row_map[sym] = f"| {name_map[sym]} | {price:,.2f} | - | {s}{chg:.2f}% |"
+
+    rows = [row_map[s] for s in order if s in row_map]
+    if not rows:
+        return ""
+    print(f"[nasdaq] premarket index individual: {len(rows)} rows")
+    header = "| 指数/ETF | 盘前价 | 涨跌点 | 涨跌幅 |\n|:---|---:|---:|---:|"
+    return "📊 主要指数\n\n" + header + "\n" + "\n".join(rows)
+
+
+async def _fetch_premarket_mag7() -> list[tuple]:
+    """
+    逐个获取美股七姐妹盘前价，Yahoo Finance 优先，东方财富兜底。
+    返回 [(sym, price, chg_pct), ...]，按 MAG7 顺序排列。
+    """
+    import asyncio
+
+    result_map: dict[str, tuple] = {}
+    try:
+        async with httpx.AsyncClient(headers=_YF_HEADERS, timeout=10, trust_env=False) as client:
+            resp = await client.get(_YF_QUOTE_URL, params={"symbols": ",".join(MAG7)})
+        for q in resp.json().get("quoteResponse", {}).get("result", []):
+            sym = q.get("symbol", "")
+            if sym not in MAG7:
+                continue
+            pre_p = q.get("preMarketPrice")
+            pre_c = q.get("preMarketChangePercent")
+            reg_p = q.get("regularMarketPrice")
+            reg_c = q.get("regularMarketChangePercent", 0.0)
+            price = pre_p if pre_p is not None else reg_p
+            chg = pre_c if pre_c is not None else reg_c
+            if price is not None:
+                result_map[sym] = (float(price), float(chg or 0))
+        print(f"[nasdaq] Mag7 Yahoo premarket: {len(result_map)}/{len(MAG7)}")
+    except Exception as e:
+        print(f"[nasdaq] Mag7 Yahoo premarket failed: {e}")
+
+    missing = [s for s in MAG7 if s not in result_map]
+    if missing:
+        em_tasks = [_fetch_em_single(s) for s in missing]
+        em_data = await asyncio.gather(*em_tasks)
+        for sym, data in zip(missing, em_data):
+            if data:
+                result_map[sym] = data
+                print(f"[nasdaq] Mag7 EM fallback {sym}: {data[1]:+.2f}%")
+
+    return [(sym, result_map[sym][0], result_map[sym][1]) for sym in MAG7 if sym in result_map]
+
+
+def _mag7_table(results: list[tuple]) -> str:
+    """美股七姐妹盘前价格表。"""
+    if not results:
+        return "（七姐妹数据暂不可用）"
+    header = "| 代码 | 盘前价 | 涨跌幅 |\n|:---|---:|---:|"
+    rows = [
+        f"| {sym} | ${price:.2f} | {'+'if chg>=0 else ''}{chg:.2f}% |"
+        for sym, price, chg in results
+    ]
+    return header + "\n" + "\n".join(rows)
+
+
 async def _fetch_stock_data() -> tuple[list[tuple], str]:
     """
     调用东方财富 push2 批量行情接口，单次请求拉取全部 Nasdaq 100 成分股。
@@ -404,19 +525,22 @@ async def fetch_stock_movers(state: NasdaqReportState) -> dict:
     t0 = time.perf_counter()
     print(f"[nasdaq] fetch_stock_movers: [{report_type}] 并发拉取 东方财富+Yahoo Finance ...")
 
-    # 三路并发：指数（Yahoo主/EM备）、东方财富个股、Yahoo个股
-    index_task = asyncio.create_task(_fetch_index_data(report_type))
     yf_task = asyncio.create_task(_fetch_yahoo_stock_data(report_type))
 
+    if report_type == "afterhours":
+        # 盘后：同时并发拉指数（Yahoo主/EM备）
+        index_task = asyncio.create_task(_fetch_index_data(report_type))
+    # 盘前不在此处拉指数，generate_report 内逐个请求 QQQ/SPY 获取实际盘前价
+
     try:
-        em_results, em_label = await _fetch_stock_data()
+        em_results, _ = await _fetch_stock_data()
     except Exception as e:
         print(f"[nasdaq] 东方财富个股失败: {e}")
         print(traceback.format_exc())
         em_results = []
 
-    index_summary = await index_task
     yf_results = await yf_task
+    index_summary = (await index_task) if report_type == "afterhours" else ""
 
     merged = _merge_stock_results(em_results, yf_results)
     elapsed = time.perf_counter() - t0
@@ -512,20 +636,28 @@ async def _generate_narrative(state: NasdaqReportState, system_prompt: str, move
 
 
 async def generate_report(state: NasdaqReportState) -> dict:
-    """盘前日报：LLM生成叙述（含实际行情交叉验证）+ 程序拼接板块涨跌表格。"""
+    """盘前日报：LLM生成叙述 + 逐个拉取 QQQ/SPY 盘前价（指数表）+ 七姐妹盘前价（个股表）。"""
+    import asyncio
     t0 = time.perf_counter()
     stock_results: list = state.get("stock_results") or []
     movers_summary = _top_movers_summary(stock_results)
     prompt = _PREMARKET_SYSTEM.replace("{date}", state.get("date") or "")
-    narrative = await _generate_narrative(state, prompt, movers_summary)
 
-    index_summary = state.get("index_summary", "")
-    movers_table = _sector_movers_table(stock_results, price_label="盘前价") if stock_results else "（股票数据暂不可用）"
+    # 三路并发：LLM叙述 + QQQ/SPY盘前指数 + 七姐妹盘前价
+    narrative_task = asyncio.create_task(_generate_narrative(state, prompt, movers_summary))
+    index_task = asyncio.create_task(_fetch_premarket_index_individual())
+    mag7_task = asyncio.create_task(_fetch_premarket_mag7())
+
+    narrative = await narrative_task
+    premarket_index = await index_task
+    mag7_results = await mag7_task
+
+    mag7_tbl = _mag7_table(mag7_results)
 
     sections = [narrative, "---"]
-    if index_summary:
-        sections += [index_summary, "---"]
-    sections += ["📈 板块涨跌榜", movers_table, "来源：Reuters/CNBC/MarketWatch"]
+    if premarket_index:
+        sections += [premarket_index, "---"]
+    sections += ["💎 美股七姐妹盘前", mag7_tbl, "来源：Reuters/CNBC/MarketWatch"]
     report = "\n\n".join(sections)
 
     print(f"[nasdaq] generate_report: {time.perf_counter() - t0:.2f}s → {len(report)} chars total")
