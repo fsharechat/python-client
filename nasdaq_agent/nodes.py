@@ -223,30 +223,30 @@ def _build_full_market_context(yf_data: dict, stock_results: list) -> str:
 
 async def _fetch_finnhub_quotes(symbols: list[str]) -> dict[str, dict]:
     """
-    Finnhub 逐只查询行情，返回 {sym: {"price": float, "chg_pct": float, "chg_pts": float}}。
-    c=当前价（盘前/盘后时段即为扩展盘价格），dp=涨跌幅%，d=涨跌点。
+    Finnhub 顺序查询行情，1次/秒，避免触发限速。
+    返回 {sym: {"price": float, "chg_pct": float, "chg_pts": float}}。
     """
     import asyncio
-
-    async def fetch_one(sym: str, client: httpx.AsyncClient):
-        try:
-            resp = await client.get(_FH_QUOTE_URL, params={"symbol": sym, "token": FINNHUB_API_KEY})
-            d = resp.json()
-            print(f"[nasdaq] Finnhub {sym} raw: {json.dumps(d)}")
-            price = d.get("c")
-            if price and float(price) > 0:
-                return sym, {
-                    "price": float(price),
-                    "chg_pct": float(d.get("dp") or 0),
-                    "chg_pts": float(d.get("d") or 0),
-                }
-        except Exception as e:
-            print(f"[nasdaq] Finnhub {sym}: {e}")
-        return None
-
+    result = {}
     async with httpx.AsyncClient(timeout=10) as client:
-        results = await asyncio.gather(*[fetch_one(s, client) for s in symbols])
-    return {r[0]: r[1] for r in results if r is not None}
+        for i, sym in enumerate(symbols):
+            try:
+                resp = await client.get(_FH_QUOTE_URL, params={"symbol": sym, "token": FINNHUB_API_KEY})
+                d = resp.json()
+                print(f"[nasdaq] Finnhub {sym} raw: {json.dumps(d)}")
+                price = d.get("c")
+                if price and float(price) > 0:
+                    result[sym] = {
+                        "price": float(price),
+                        "chg_pct": float(d.get("dp") or 0),
+                        "chg_pts": float(d.get("d") or 0),
+                    }
+            except Exception as e:
+                print(f"[nasdaq] Finnhub {sym}: {e}")
+            if i < len(symbols) - 1:
+                await asyncio.sleep(1)
+    print(f"[nasdaq] Finnhub: {len(result)}/{len(symbols)} symbols fetched")
+    return result
 
 
 async def _fetch_em_index_data(report_type: str) -> str:
@@ -297,7 +297,7 @@ def _fetch_yf_premarket_sync(symbols: list[str]) -> dict[str, dict]:
     """
     import yfinance as yf
     result = {}
-    for sym in symbols:
+    for i, sym in enumerate(symbols):
         try:
             info = yf.Ticker(sym).info
             print(f"[nasdaq] yfinance {sym} raw: preMarketPrice={info.get('preMarketPrice')} "
@@ -314,6 +314,8 @@ def _fetch_yf_premarket_sync(symbols: list[str]) -> dict[str, dict]:
                 result[sym] = {"price": price, "chg_pct": chg_pct, "chg_pts": chg_pts}
         except Exception as e:
             print(f"[nasdaq] yfinance {sym} failed: {e}")
+        if i < len(symbols) - 1:
+            time.sleep(1)
     print(f"[nasdaq] yfinance premarket: {len(result)}/{len(symbols)} symbols fetched")
     return result
 
