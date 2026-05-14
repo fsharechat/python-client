@@ -196,16 +196,24 @@ def _top_movers_summary(results: list[tuple]) -> str:
 
 async def _fetch_yahoo_index_data(report_type: str) -> str:
     """
-    Yahoo Finance 获取 NQ=F / ES=F 期货实时行情（近24小时交易，盘前盘后均有效）。
-    盘前/盘后均使用 regularMarketPrice，因为期货全天连续交易。
+    Yahoo Finance 获取指数/期货行情。
+    盘前：NQ=F（纳指100期货）+ ES=F（标普500期货），近24h连续交易，反映盘前方向
+    盘后：^NDX（纳斯达克100指数） + ^GSPC（标普500指数），收盘实际值
     """
-    val_label = "盘前价" if report_type == "premarket" else "收盘价"
-    name_map = {"NQ=F": "纳指100期货(NQ)", "ES=F": "标普500期货(ES)"}
-    order = ["NQ=F", "ES=F"]
+    if report_type == "premarket":
+        symbols = "NQ=F,ES=F"
+        name_map = {"NQ=F": "纳指100期货(NQ)", "ES=F": "标普500期货(ES)"}
+        order = ["NQ=F", "ES=F"]
+        val_label = "盘前价"
+    else:
+        symbols = "^NDX,^GSPC"
+        name_map = {"^NDX": "纳斯达克100指数", "^GSPC": "标普500指数"}
+        order = ["^NDX", "^GSPC"]
+        val_label = "收盘价"
 
     try:
-        async with httpx.AsyncClient(headers=_YF_HEADERS, timeout=10) as client:
-            resp = await client.get(_YF_QUOTE_URL, params={"symbols": "NQ=F,ES=F"})
+        async with httpx.AsyncClient(headers=_YF_HEADERS, timeout=10, trust_env=False) as client:
+            resp = await client.get(_YF_QUOTE_URL, params={"symbols": symbols})
         quotes = resp.json().get("quoteResponse", {}).get("result", [])
 
         row_map: dict[str, str] = {}
@@ -223,8 +231,9 @@ async def _fetch_yahoo_index_data(report_type: str) -> str:
         rows = [row_map[s] for s in order if s in row_map]
         if not rows:
             return ""
-        header = f"| 指数/期货 | {val_label} | 涨跌点 | 涨跌幅 |\n|:---|---:|---:|---:|"
-        print(f"[nasdaq] Yahoo index: {len(rows)} rows fetched")
+        col_label = "期货价" if report_type == "premarket" else val_label
+        header = f"| 指数/期货 | {col_label} | 涨跌点 | 涨跌幅 |\n|:---|---:|---:|---:|"
+        print(f"[nasdaq] Yahoo index ({report_type}): {len(rows)} rows fetched")
         return "📊 主要指数\n\n" + header + "\n" + "\n".join(rows)
 
     except Exception as e:
@@ -233,17 +242,11 @@ async def _fetch_yahoo_index_data(report_type: str) -> str:
 
 
 async def _fetch_em_index_data(report_type: str) -> str:
-    """东方财富指数兜底：盘前用 QQQ/SPY ETF，盘后用 NDX/SPX 指数。"""
-    if report_type == "premarket":
-        secids = "105.QQQ,106.SPY"
-        name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
-        order = ["QQQ", "SPY"]
-        val_label = "盘前价"
-    else:
-        secids = "100.NDX,100.SPX"
-        name_map = {"NDX": "纳斯达克100", "SPX": "标普500"}
-        order = ["NDX", "SPX"]
-        val_label = "收盘价"
+    """东方财富指数兜底：盘前/盘后均用 QQQ/SPY ETF（对应关系明确，规避综合指数混淆）。"""
+    secids = "105.QQQ,106.SPY"
+    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
+    order = ["QQQ", "SPY"]
+    val_label = "盘前价" if report_type == "premarket" else "收盘价"
 
     params = {"fltt": "2", "invt": "2", "fields": "f12,f2,f3,f4", "secids": secids}
     try:
@@ -295,7 +298,7 @@ async def _fetch_yahoo_stock_data(report_type: str) -> dict[str, tuple]:
     """
     symbols = ",".join(NASDAQ100_TICKERS)
     try:
-        async with httpx.AsyncClient(headers=_YF_HEADERS, timeout=20) as client:
+        async with httpx.AsyncClient(headers=_YF_HEADERS, timeout=20, trust_env=False) as client:
             resp = await client.get(_YF_QUOTE_URL, params={"symbols": symbols})
 
         result: dict[str, tuple] = {}
