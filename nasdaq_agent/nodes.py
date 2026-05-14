@@ -410,15 +410,36 @@ async def _fetch_stock_data() -> tuple[list[tuple], str]:
     return results, "实时行情"
 
 
+def _build_fh_index_table(fh_data: dict, report_type: str) -> str:
+    """从 Finnhub 行情数据构建 QQQ/SPY 指数表格字符串。"""
+    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
+    order = ["QQQ", "SPY"]
+    val_label = "盘前价" if report_type == "premarket" else "收盘价"
+    rows = []
+    for sym in order:
+        if sym not in fh_data:
+            continue
+        q = fh_data[sym]
+        s = "+" if q["chg_pct"] >= 0 else ""
+        ps = "+" if q["chg_pts"] >= 0 else ""
+        rows.append(f"| {name_map[sym]} | {q['price']:,.2f} | {ps}{q['chg_pts']:.2f} | {s}{q['chg_pct']:.2f}% |")
+    if not rows:
+        return ""
+    header = f"| 指数/ETF | {val_label} | 涨跌点 | 涨跌幅 |\n|:---|---:|---:|---:|"
+    print(f"[nasdaq] Finnhub index ({report_type}): {len(rows)} rows")
+    return "📊 主要指数\n\n" + header + "\n" + "\n".join(rows)
+
+
 async def fetch_stock_movers(state: NasdaqReportState) -> dict:
     import asyncio
     import traceback
     report_type = state.get("report_type") or "premarket"
     t0 = time.perf_counter()
-    print(f"[nasdaq] fetch_stock_movers: [{report_type}] 拉取东方财富批量行情...")
+    print(f"[nasdaq] fetch_stock_movers: [{report_type}] 拉取行情...")
 
     if report_type == "afterhours":
-        index_task = asyncio.create_task(_fetch_em_index_data(report_type))
+        # 并发：Finnhub（101只成分股 + QQQ/SPY）与 EM 批量同时发起
+        fh_task = asyncio.create_task(_fetch_finnhub_quotes(NASDAQ100_TICKERS + ["QQQ", "SPY"]))
 
     try:
         em_results, _ = await _fetch_stock_data()
@@ -427,10 +448,34 @@ async def fetch_stock_movers(state: NasdaqReportState) -> dict:
         print(traceback.format_exc())
         em_results = []
 
-    index_summary = (await index_task) if report_type == "afterhours" else ""
+    if report_type == "afterhours":
+        fh_data = await fh_task
+
+        # 个股合并：Finnhub 主，EM 备
+        em_map = {sym: (price, chg) for sym, price, chg in em_results}
+        stock_results = []
+        fh_count = 0
+        for sym in NASDAQ100_TICKERS:
+            if sym in fh_data:
+                q = fh_data[sym]
+                stock_results.append((sym, q["price"], q["chg_pct"]))
+                fh_count += 1
+            elif sym in em_map:
+                stock_results.append((sym, em_map[sym][0], em_map[sym][1]))
+        print(f"[nasdaq] afterhours stocks: Finnhub={fh_count} EM_fallback={len(stock_results) - fh_count}")
+
+        # 指数：Finnhub 主，EM 备
+        index_summary = _build_fh_index_table(fh_data, "afterhours")
+        if not index_summary:
+            print("[nasdaq] Finnhub index empty, falling back to East Money")
+            index_summary = await _fetch_em_index_data(report_type)
+    else:
+        stock_results = em_results
+        index_summary = ""
+
     elapsed = time.perf_counter() - t0
-    print(f"[nasdaq] fetch_stock_movers: {elapsed:.2f}s | EM={len(em_results)}")
-    return {"index_summary": index_summary, "stock_results": em_results}
+    print(f"[nasdaq] fetch_stock_movers: {elapsed:.2f}s | stocks={len(stock_results if report_type == 'afterhours' else em_results)}")
+    return {"index_summary": index_summary, "stock_results": stock_results if report_type == "afterhours" else em_results}
 
 
 # ─── 报告生成节点 ──────────────────────────────────────────────────────────────
