@@ -7,6 +7,7 @@ Nasdaq 100 日报 Agent 各节点实现（全 async）。
 盘后：4路盘后搜索 + 行情 → generate_afterhours_report → send_notification
 """
 
+import json
 import time
 
 import httpx
@@ -15,7 +16,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 
-from config import ANTHROPIC_API_KEY, GENERATE_MODEL, NOTIFY_MOBILES
+from config import ANTHROPIC_API_KEY, FINNHUB_API_KEY, GENERATE_MODEL, NOTIFY_MOBILES
 from nasdaq_agent.state import NasdaqReportState
 from nasdaq_agent.tickers import NASDAQ100_TICKERS, NASDAQ100_SECTOR_MAP, SECTOR_ORDER
 
@@ -34,16 +35,8 @@ _EM_HEADERS = {
     "Referer": "https://www.eastmoney.com/",
 }
 
-# Yahoo Finance 非官方 JSON 接口（期货/个股盘前盘后，国际网络访问）
-_YF_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
-_YF_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json,text/plain,*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-# 东方财富单只股票行情接口
-_EM_STOCK_URL = "https://push2.eastmoney.com/api/qt/stock/get"
+# Finnhub 实时行情接口（盘前/盘后指数与七姐妹）
+_FH_QUOTE_URL = "https://finnhub.io/api/v1/quote"
 
 # 美股七姐妹（盘前日报单独展示）
 MAG7 = ["AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA"]
@@ -67,6 +60,7 @@ async def _ddg_search(query: str, max_results: int = 5) -> list[dict]:
                     "url": url.get_text(strip=True) if url else "",
                     "body": snippet.get_text(strip=True),
                 })
+        print(f"[nasdaq] DDG raw results: {json.dumps(results, ensure_ascii=False)}")
         return results
     except Exception as e:
         print(f"[nasdaq] DDG search failed: '{query}' → {e}")
@@ -186,65 +180,73 @@ def _sector_movers_table(all_results: list[tuple], price_label: str = "价格") 
     return "\n\n".join(parts)
 
 
-def _top_movers_summary(results: list[tuple]) -> str:
-    """全市场涨跌幅前5摘要，注入 LLM prompt 供交叉验证。"""
-    if not results:
-        return ""
-    gainers = sorted([r for r in results if r[2] > 0], key=lambda x: x[2], reverse=True)[:5]
-    losers = sorted([r for r in results if r[2] < 0], key=lambda x: x[2])[:5]
+def _build_full_market_context(yf_data: dict, stock_results: list) -> str:
+    """
+    汇总 yfinance 盘前数据 + 东方财富涨跌幅，构建注入 LLM 的完整行情上下文。
+    yf_data: {sym: {"price", "chg_pct", "chg_pts"}}
+    stock_results: [(sym, price, chg_pct), ...]  来自东方财富批量接口
+    """
     parts = ["【实际行情数据（请在叙述中引用具体数字）】"]
-    if gainers:
-        parts.append("涨幅前5：" + "、".join(f"{sym} {chg:+.2f}%（${price:.2f}）" for sym, price, chg in gainers))
-    if losers:
-        parts.append("跌幅前5：" + "、".join(f"{sym} {chg:+.2f}%（${price:.2f}）" for sym, price, chg in losers))
-    return "\n".join(parts)
+
+    # 主要指数盘前
+    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
+    index_lines = []
+    for sym in ["QQQ", "SPY"]:
+        if sym in yf_data:
+            q = yf_data[sym]
+            s = "+" if q["chg_pct"] >= 0 else ""
+            index_lines.append(f"  {name_map[sym]}: ${q['price']:.2f} {s}{q['chg_pct']:.4f}%")
+    if index_lines:
+        parts.append("📊 主要指数（盘前）\n" + "\n".join(index_lines))
+
+    # 七姐妹盘前
+    mag7_lines = []
+    for sym in MAG7:
+        if sym in yf_data:
+            q = yf_data[sym]
+            s = "+" if q["chg_pct"] >= 0 else ""
+            mag7_lines.append(f"  {sym}: ${q['price']:.2f} {s}{q['chg_pct']:.4f}%")
+    if mag7_lines:
+        parts.append("💎 七姐妹盘前\n" + "\n".join(mag7_lines))
+
+    # 纳斯达克100涨跌幅前5（东方财富）
+    if stock_results:
+        gainers = sorted([r for r in stock_results if r[2] > 0], key=lambda x: x[2], reverse=True)[:5]
+        losers  = sorted([r for r in stock_results if r[2] < 0], key=lambda x: x[2])[:5]
+        if gainers:
+            parts.append("涨幅前5：" + "、".join(f"{sym} {chg:+.2f}%（${price:.2f}）" for sym, price, chg in gainers))
+        if losers:
+            parts.append("跌幅前5：" + "、".join(f"{sym} {chg:+.2f}%（${price:.2f}）" for sym, price, chg in losers))
+
+    return "\n\n".join(parts)
 
 
-async def _fetch_yahoo_index_data(report_type: str) -> str:
+async def _fetch_finnhub_quotes(symbols: list[str]) -> dict[str, dict]:
     """
-    Yahoo Finance 获取指数/期货行情。
-    盘前：NQ=F（纳指100期货）+ ES=F（标普500期货），近24h连续交易，反映盘前方向
-    盘后：^NDX（纳斯达克100指数） + ^GSPC（标普500指数），收盘实际值
+    Finnhub 逐只查询行情，返回 {sym: {"price": float, "chg_pct": float, "chg_pts": float}}。
+    c=当前价（盘前/盘后时段即为扩展盘价格），dp=涨跌幅%，d=涨跌点。
     """
-    if report_type == "premarket":
-        symbols = "NQ=F,ES=F"
-        name_map = {"NQ=F": "纳指100期货(NQ)", "ES=F": "标普500期货(ES)"}
-        order = ["NQ=F", "ES=F"]
-        val_label = "盘前价"
-    else:
-        symbols = "^NDX,^GSPC"
-        name_map = {"^NDX": "纳斯达克100指数", "^GSPC": "标普500指数"}
-        order = ["^NDX", "^GSPC"]
-        val_label = "收盘价"
+    import asyncio
 
-    try:
-        async with httpx.AsyncClient(headers=_YF_HEADERS, timeout=10, trust_env=False) as client:
-            resp = await client.get(_YF_QUOTE_URL, params={"symbols": symbols})
-        quotes = resp.json().get("quoteResponse", {}).get("result", [])
+    async def fetch_one(sym: str, client: httpx.AsyncClient):
+        try:
+            resp = await client.get(_FH_QUOTE_URL, params={"symbol": sym, "token": FINNHUB_API_KEY})
+            d = resp.json()
+            print(f"[nasdaq] Finnhub {sym} raw: {json.dumps(d)}")
+            price = d.get("c")
+            if price and float(price) > 0:
+                return sym, {
+                    "price": float(price),
+                    "chg_pct": float(d.get("dp") or 0),
+                    "chg_pts": float(d.get("d") or 0),
+                }
+        except Exception as e:
+            print(f"[nasdaq] Finnhub {sym}: {e}")
+        return None
 
-        row_map: dict[str, str] = {}
-        for q in quotes:
-            sym = q.get("symbol", "")
-            price = q.get("regularMarketPrice")
-            chg_pct = q.get("regularMarketChangePercent")
-            chg_pts = q.get("regularMarketChange")
-            if sym not in name_map or price is None or chg_pct is None:
-                continue
-            sign = "+" if chg_pct >= 0 else ""
-            pts_sign = "+" if (chg_pts or 0) >= 0 else ""
-            row_map[sym] = f"| {name_map[sym]} | {price:,.2f} | {pts_sign}{chg_pts:.2f} | {sign}{chg_pct:.2f}% |"
-
-        rows = [row_map[s] for s in order if s in row_map]
-        if not rows:
-            return ""
-        col_label = "期货价" if report_type == "premarket" else val_label
-        header = f"| 指数/期货 | {col_label} | 涨跌点 | 涨跌幅 |\n|:---|---:|---:|---:|"
-        print(f"[nasdaq] Yahoo index ({report_type}): {len(rows)} rows fetched")
-        return "📊 主要指数\n\n" + header + "\n" + "\n".join(rows)
-
-    except Exception as e:
-        print(f"[nasdaq] Yahoo index fetch failed: {e}")
-        return ""
+    async with httpx.AsyncClient(timeout=10) as client:
+        results = await asyncio.gather(*[fetch_one(s, client) for s in symbols])
+    return {r[0]: r[1] for r in results if r is not None}
 
 
 async def _fetch_em_index_data(report_type: str) -> str:
@@ -258,7 +260,9 @@ async def _fetch_em_index_data(report_type: str) -> str:
     try:
         async with httpx.AsyncClient(headers=_EM_HEADERS, timeout=10, trust_env=False, follow_redirects=True) as client:
             resp = await client.get(_EM_URL, params=params)
-        diff = resp.json().get("data", {}).get("diff", [])
+        raw = resp.json()
+        print(f"[nasdaq] EM index raw: {json.dumps(raw, ensure_ascii=False)}")
+        diff = raw.get("data", {}).get("diff", [])
         items = diff if isinstance(diff, list) else list(diff.values())
 
         row_map: dict[str, str] = {}
@@ -285,183 +289,72 @@ async def _fetch_em_index_data(report_type: str) -> str:
         return ""
 
 
-async def _fetch_index_data(report_type: str) -> str:
-    """指数行情：Yahoo Finance（NQ=F/ES=F）为主，东方财富为兜底。"""
-    result = await _fetch_yahoo_index_data(report_type)
-    if result:
-        return result
-    print("[nasdaq] Yahoo index failed, falling back to East Money")
-    return await _fetch_em_index_data(report_type)
-
-
-async def _fetch_yahoo_stock_data(report_type: str) -> dict[str, tuple]:
+def _fetch_yf_premarket_sync(symbols: list[str]) -> dict[str, dict]:
     """
-    Yahoo Finance 批量获取 NASDAQ100 成分股行情。
-    盘前取 preMarketPrice/preMarketChangePercent，
-    盘后取 postMarketPrice/postMarketChangePercent，
-    无扩展盘数据时退回 regularMarket 字段。
-    返回 {sym: (price, chg_pct)}，失败返回空字典。
+    同步顺序获取 yfinance 盘前行情（避免 curl_cffi 多线程 TLS 问题）。
+    preMarketChangePercent 已是百分比格式（1.38 = 1.38%）。
+    返回 {sym: {"price": float, "chg_pct": float, "chg_pts": float}}
     """
-    symbols = ",".join(NASDAQ100_TICKERS)
-    try:
-        async with httpx.AsyncClient(headers=_YF_HEADERS, timeout=20, trust_env=False) as client:
-            resp = await client.get(_YF_QUOTE_URL, params={"symbols": symbols})
-
-        result: dict[str, tuple] = {}
-        for q in resp.json().get("quoteResponse", {}).get("result", []):
-            sym = q.get("symbol", "")
-            if not sym:
-                continue
-            reg_price = q.get("regularMarketPrice")
-            reg_chg = q.get("regularMarketChangePercent", 0.0)
-            if report_type == "premarket":
-                price = q.get("preMarketPrice") or reg_price
-                chg = q.get("preMarketChangePercent") or reg_chg
-            elif report_type == "afterhours":
-                price = q.get("postMarketPrice") or reg_price
-                chg = q.get("postMarketChangePercent") or reg_chg
-            else:
-                price, chg = reg_price, reg_chg
-            if price is not None:
-                result[sym] = (float(price), float(chg or 0))
-
-        print(f"[nasdaq] Yahoo stocks: {len(result)} tickers fetched")
-        return result
-    except Exception as e:
-        print(f"[nasdaq] Yahoo stock fetch failed: {e}")
-        return {}
+    import yfinance as yf
+    result = {}
+    for sym in symbols:
+        try:
+            info = yf.Ticker(sym).info
+            print(f"[nasdaq] yfinance {sym} raw: preMarketPrice={info.get('preMarketPrice')} "
+                  f"preMarketChangePercent={info.get('preMarketChangePercent')} "
+                  f"regularMarketPrice={info.get('regularMarketPrice')}")
+            pre_p = info.get("preMarketPrice")
+            reg_p = info.get("regularMarketPrice")
+            pre_c = info.get("preMarketChangePercent")
+            if pre_p and float(pre_p) > 0:
+                price = float(pre_p)
+                reg = float(reg_p or price)
+                chg_pts = price - reg
+                chg_pct = float(pre_c) if pre_c is not None else (chg_pts / reg * 100 if reg else 0)
+                result[sym] = {"price": price, "chg_pct": chg_pct, "chg_pts": chg_pts}
+        except Exception as e:
+            print(f"[nasdaq] yfinance {sym} failed: {e}")
+    print(f"[nasdaq] yfinance premarket: {len(result)}/{len(symbols)} symbols fetched")
+    return result
 
 
-def _merge_stock_results(
-    em_results: list[tuple],
-    yf_results: dict[str, tuple],
-) -> list[tuple]:
-    """
-    合并东方财富（主）和 Yahoo Finance（补）行情数据。
-    - 东方财富有数据：使用东方财富，并与 Yahoo 交叉验证（差异>2% 打印告警）
-    - 东方财富缺失：用 Yahoo Finance 补充
-    - 两者都缺失：跳过
-    """
-    em_map = {sym: (price, chg) for sym, price, chg in em_results}
-    merged: list[tuple] = []
-
-    for sym in NASDAQ100_TICKERS:
-        if sym in em_map:
-            em_price, em_chg = em_map[sym]
-            if sym in yf_results:
-                yf_price, yf_chg = yf_results[sym]
-                if abs(em_chg - yf_chg) > 2.0:
-                    print(f"[nasdaq] ⚠ 数据差异 {sym}: 东方财富 {em_chg:+.2f}% vs Yahoo {yf_chg:+.2f}%")
-            merged.append((sym, em_price, em_chg))
-        elif sym in yf_results:
-            yf_price, yf_chg = yf_results[sym]
-            print(f"[nasdaq] {sym}: 东方财富无数据，Yahoo Finance 补充 {yf_chg:+.2f}%")
-            merged.append((sym, yf_price, yf_chg))
-
-    return merged
-
-
-async def _fetch_em_single(symbol: str, prefix: str = "105") -> tuple[float, float] | None:
-    """东方财富单只股票行情，返回 (price, chg_pct) 或 None。"""
-    params = {"secid": f"{prefix}.{symbol}", "fields": "f12,f2,f3", "invt": "2"}
-    try:
-        async with httpx.AsyncClient(headers=_EM_HEADERS, timeout=8, trust_env=False, follow_redirects=True) as client:
-            resp = await client.get(_EM_STOCK_URL, params=params)
-        d = resp.json().get("data") or {}
-        p, c = d.get("f2"), d.get("f3")
-        if p not in (None, "-", 0) and c not in (None, "-"):
-            return float(p), float(c)
-    except Exception as e:
-        print(f"[nasdaq] EM single {symbol}: {e}")
-    return None
+async def _fetch_yf_premarket(symbols: list[str]) -> dict[str, dict]:
+    """异步包装：在单线程 executor 中顺序调用 yfinance。"""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch_yf_premarket_sync, symbols)
 
 
 async def _fetch_premarket_index_individual() -> str:
-    """
-    盘前专用：逐个请求 QQQ/SPY 盘前价。
-    Yahoo Finance 优先（有明确 preMarketPrice 字段），东方财富兜底。
-    """
+    """盘前指数兜底：Finnhub（昨收盘价）→ 东方财富。"""
     name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
-    em_prefix = {"QQQ": "105", "SPY": "106"}
     order = ["QQQ", "SPY"]
 
-    row_map: dict[str, str] = {}
-    try:
-        async with httpx.AsyncClient(headers=_YF_HEADERS, timeout=10, trust_env=False) as client:
-            resp = await client.get(_YF_QUOTE_URL, params={"symbols": "QQQ,SPY"})
-        for q in resp.json().get("quoteResponse", {}).get("result", []):
-            sym = q.get("symbol", "")
-            if sym not in name_map:
-                continue
-            pre_p = q.get("preMarketPrice")
-            pre_c = q.get("preMarketChangePercent")
-            pre_pts = q.get("preMarketChange")
-            reg_p = q.get("regularMarketPrice")
-            reg_c = q.get("regularMarketChangePercent", 0.0)
-            reg_pts = q.get("regularMarketChange", 0.0)
-            price = pre_p if pre_p is not None else reg_p
-            chg = pre_c if pre_c is not None else reg_c
-            pts = pre_pts if pre_pts is not None else reg_pts
-            if price is not None:
-                s = "+" if (chg or 0) >= 0 else ""
-                ps = "+" if (pts or 0) >= 0 else ""
-                row_map[sym] = f"| {name_map[sym]} | {price:,.2f} | {ps}{pts:.2f} | {s}{chg:.2f}% |"
-    except Exception as e:
-        print(f"[nasdaq] premarket index Yahoo failed: {e}")
-
+    quotes = await _fetch_finnhub_quotes(order)
+    rows = []
     for sym in order:
-        if sym not in row_map:
-            data = await _fetch_em_single(sym, em_prefix[sym])
-            if data:
-                price, chg = data
-                s = "+" if chg >= 0 else ""
-                row_map[sym] = f"| {name_map[sym]} | {price:,.2f} | - | {s}{chg:.2f}% |"
+        if sym not in quotes:
+            continue
+        q = quotes[sym]
+        s = "+" if q["chg_pct"] >= 0 else ""
+        ps = "+" if q["chg_pts"] >= 0 else ""
+        rows.append(f"| {name_map[sym]} | {q['price']:,.2f} | {ps}{q['chg_pts']:.2f} | {s}{q['chg_pct']:.2f}% |")
 
-    rows = [row_map[s] for s in order if s in row_map]
-    if not rows:
-        return ""
-    print(f"[nasdaq] premarket index individual: {len(rows)} rows")
-    header = "| 指数/ETF | 盘前价 | 涨跌点 | 涨跌幅 |\n|:---|---:|---:|---:|"
-    return "📊 主要指数\n\n" + header + "\n" + "\n".join(rows)
+    if rows:
+        print(f"[nasdaq] premarket index Finnhub: {len(rows)} rows")
+        header = "| 指数/ETF | 盘前价 | 涨跌点 | 涨跌幅 |\n|:---|---:|---:|---:|"
+        return "📊 主要指数\n\n" + header + "\n" + "\n".join(rows)
+
+    print("[nasdaq] premarket index Finnhub failed, falling back to East Money")
+    return await _fetch_em_index_data("premarket")
 
 
 async def _fetch_premarket_mag7() -> list[tuple]:
-    """
-    逐个获取美股七姐妹盘前价，Yahoo Finance 优先，东方财富兜底。
-    返回 [(sym, price, chg_pct), ...]，按 MAG7 顺序排列。
-    """
-    import asyncio
-
-    result_map: dict[str, tuple] = {}
-    try:
-        async with httpx.AsyncClient(headers=_YF_HEADERS, timeout=10, trust_env=False) as client:
-            resp = await client.get(_YF_QUOTE_URL, params={"symbols": ",".join(MAG7)})
-        for q in resp.json().get("quoteResponse", {}).get("result", []):
-            sym = q.get("symbol", "")
-            if sym not in MAG7:
-                continue
-            pre_p = q.get("preMarketPrice")
-            pre_c = q.get("preMarketChangePercent")
-            reg_p = q.get("regularMarketPrice")
-            reg_c = q.get("regularMarketChangePercent", 0.0)
-            price = pre_p if pre_p is not None else reg_p
-            chg = pre_c if pre_c is not None else reg_c
-            if price is not None:
-                result_map[sym] = (float(price), float(chg or 0))
-        print(f"[nasdaq] Mag7 Yahoo premarket: {len(result_map)}/{len(MAG7)}")
-    except Exception as e:
-        print(f"[nasdaq] Mag7 Yahoo premarket failed: {e}")
-
-    missing = [s for s in MAG7 if s not in result_map]
-    if missing:
-        em_tasks = [_fetch_em_single(s) for s in missing]
-        em_data = await asyncio.gather(*em_tasks)
-        for sym, data in zip(missing, em_data):
-            if data:
-                result_map[sym] = data
-                print(f"[nasdaq] Mag7 EM fallback {sym}: {data[1]:+.2f}%")
-
-    return [(sym, result_map[sym][0], result_map[sym][1]) for sym in MAG7 if sym in result_map]
+    """通过 Finnhub 获取七姐妹盘前价，返回 [(sym, price, chg_pct), ...]。"""
+    quotes = await _fetch_finnhub_quotes(MAG7)
+    results = [(sym, quotes[sym]["price"], quotes[sym]["chg_pct"]) for sym in MAG7 if sym in quotes]
+    print(f"[nasdaq] Mag7 Finnhub: {len(results)}/{len(MAG7)}")
+    return results
 
 
 def _mag7_table(results: list[tuple]) -> str:
@@ -493,16 +386,15 @@ async def _fetch_stock_data() -> tuple[list[tuple], str]:
     async with httpx.AsyncClient(headers=_EM_HEADERS, timeout=20, trust_env=False, follow_redirects=True) as client:
         resp = await client.get(_EM_URL, params=params)
 
-    print(f"[nasdaq] East Money HTTP {resp.status_code}, body[:200]: {resp.text[:200]}")
+    print(f"[nasdaq] East Money HTTP {resp.status_code}")
 
     if resp.status_code != 200:
         raise RuntimeError(f"East Money API returned HTTP {resp.status_code}")
 
     raw = resp.json()
-    print(f"[nasdaq] East Money data keys: {list(raw.get('data', {}).keys())}")
     diff = raw.get("data", {}).get("diff", [])
     items = diff if isinstance(diff, list) else list(diff.values())
-    print(f"[nasdaq] East Money diff items count: {len(items)}")
+    print(f"[nasdaq] East Money stocks raw ({len(items)} items): {json.dumps(items, ensure_ascii=False)}")
 
     results = []
     for item in items:
@@ -523,14 +415,10 @@ async def fetch_stock_movers(state: NasdaqReportState) -> dict:
     import traceback
     report_type = state.get("report_type") or "premarket"
     t0 = time.perf_counter()
-    print(f"[nasdaq] fetch_stock_movers: [{report_type}] 并发拉取 东方财富+Yahoo Finance ...")
-
-    yf_task = asyncio.create_task(_fetch_yahoo_stock_data(report_type))
+    print(f"[nasdaq] fetch_stock_movers: [{report_type}] 拉取东方财富批量行情...")
 
     if report_type == "afterhours":
-        # 盘后：同时并发拉指数（Yahoo主/EM备）
-        index_task = asyncio.create_task(_fetch_index_data(report_type))
-    # 盘前不在此处拉指数，generate_report 内逐个请求 QQQ/SPY 获取实际盘前价
+        index_task = asyncio.create_task(_fetch_em_index_data(report_type))
 
     try:
         em_results, _ = await _fetch_stock_data()
@@ -539,13 +427,10 @@ async def fetch_stock_movers(state: NasdaqReportState) -> dict:
         print(traceback.format_exc())
         em_results = []
 
-    yf_results = await yf_task
     index_summary = (await index_task) if report_type == "afterhours" else ""
-
-    merged = _merge_stock_results(em_results, yf_results)
     elapsed = time.perf_counter() - t0
-    print(f"[nasdaq] fetch_stock_movers: {elapsed:.2f}s | EM={len(em_results)} YF={len(yf_results)} 合并={len(merged)}")
-    return {"index_summary": index_summary, "stock_results": merged}
+    print(f"[nasdaq] fetch_stock_movers: {elapsed:.2f}s | EM={len(em_results)}")
+    return {"index_summary": index_summary, "stock_results": em_results}
 
 
 # ─── 报告生成节点 ──────────────────────────────────────────────────────────────
@@ -636,21 +521,44 @@ async def _generate_narrative(state: NasdaqReportState, system_prompt: str, move
 
 
 async def generate_report(state: NasdaqReportState) -> dict:
-    """盘前日报：LLM生成叙述 + 逐个拉取 QQQ/SPY 盘前价（指数表）+ 七姐妹盘前价（个股表）。"""
-    import asyncio
+    """盘前日报：先获取 yfinance 完整盘前数据，再连同 EM 数据一起交给 LLM 生成汇报。"""
     t0 = time.perf_counter()
     stock_results: list = state.get("stock_results") or []
-    movers_summary = _top_movers_summary(stock_results)
     prompt = _PREMARKET_SYSTEM.replace("{date}", state.get("date") or "")
 
-    # 三路并发：LLM叙述 + QQQ/SPY盘前指数 + 七姐妹盘前价
-    narrative_task = asyncio.create_task(_generate_narrative(state, prompt, movers_summary))
-    index_task = asyncio.create_task(_fetch_premarket_index_individual())
-    mag7_task = asyncio.create_task(_fetch_premarket_mag7())
+    # Step 1：获取 yfinance 盘前数据（QQQ/SPY + Mag7）
+    yf_data = await _fetch_yf_premarket(["QQQ", "SPY"] + MAG7)
 
-    narrative = await narrative_task
-    premarket_index = await index_task
-    mag7_results = await mag7_task
+    # Step 2：构建完整行情上下文（指数 + 七姐妹 + EM 涨跌幅），交给 LLM 生成叙述
+    market_context = _build_full_market_context(yf_data, stock_results)
+    narrative = await _generate_narrative(state, prompt, market_context)
+
+    # Step 3：拼接指数表（yfinance 主路径，失败则 Finnhub/EM 兜底）
+    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
+    index_rows = []
+    for sym in ["QQQ", "SPY"]:
+        if sym not in yf_data:
+            continue
+        q = yf_data[sym]
+        s, ps = ("+" if q["chg_pct"] >= 0 else ""), ("+" if q["chg_pts"] >= 0 else "")
+        index_rows.append(f"| {name_map[sym]} | {q['price']:,.2f} | {ps}{q['chg_pts']:.2f} | {s}{q['chg_pct']:.4f}% |")
+
+    if index_rows:
+        header = "| 指数/ETF | 盘前价 | 涨跌点 | 涨跌幅 |\n|:---|---:|---:|---:|"
+        premarket_index = "📊 主要指数\n\n" + header + "\n" + "\n".join(index_rows)
+        print(f"[nasdaq] premarket index yfinance: {len(index_rows)} rows")
+    else:
+        print("[nasdaq] yfinance index empty, falling back to Finnhub/EM")
+        premarket_index = await _fetch_premarket_index_individual()
+
+    # Step 4：拼接七姐妹表（yfinance 主路径，失败则 Finnhub 兜底）
+    mag7_results = [(sym, yf_data[sym]["price"], yf_data[sym]["chg_pct"])
+                    for sym in MAG7 if sym in yf_data]
+    if mag7_results:
+        print(f"[nasdaq] Mag7 yfinance: {len(mag7_results)}/{len(MAG7)}")
+    else:
+        print("[nasdaq] yfinance Mag7 empty, falling back to Finnhub")
+        mag7_results = await _fetch_premarket_mag7()
 
     mag7_tbl = _mag7_table(mag7_results)
 
@@ -668,7 +576,7 @@ async def generate_afterhours_report(state: NasdaqReportState) -> dict:
     """盘后日报：LLM生成叙述（含实际行情交叉验证）+ 程序拼接板块涨跌表格。"""
     t0 = time.perf_counter()
     stock_results: list = state.get("stock_results") or []
-    movers_summary = _top_movers_summary(stock_results)
+    movers_summary = _build_full_market_context({}, stock_results)
     prompt = _AFTERHOURS_SYSTEM.replace("{date}", state.get("date") or "")
     narrative = await _generate_narrative(state, prompt, movers_summary)
 

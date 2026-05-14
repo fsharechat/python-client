@@ -6,6 +6,9 @@ load_dotenv()
 # Anthropic
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
+# Finnhub（盘前/盘后指数与七姐妹行情）
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
+
 # 纳斯达克日报推送手机号（飞享IM，多个用英文逗号分隔）
 NOTIFY_MOBILES: list[int] = [
     int(m.strip()) for m in os.getenv("NOTIFY_MOBILES", "").split(",") if m.strip().isdigit()
