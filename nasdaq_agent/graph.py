@@ -12,6 +12,7 @@ from nasdaq_agent.nodes import (
     fetch_stock_movers,
     generate_report,
     generate_afterhours_report,
+    generate_intraday_report,
     search_earnings,
     search_futures,
     search_macro_news,
@@ -20,6 +21,9 @@ from nasdaq_agent.nodes import (
     search_afterhours_movers,
     search_closing_summary,
     search_tomorrow_preview,
+    search_opening_movers,
+    search_morning_economics,
+    search_opening_news,
     send_notification,
 )
 
@@ -77,6 +81,32 @@ def build_afterhours_graph():
     builder.add_edge("fetch_stock_movers", "generate_afterhours_report")
 
     builder.add_edge("generate_afterhours_report", "send_notification")
+    builder.add_edge("send_notification", END)
+
+    return builder.compile()
+
+
+def build_intraday_graph():
+    builder = StateGraph(NasdaqReportState)
+
+    builder.add_node("search_opening_movers", search_opening_movers)
+    builder.add_node("search_morning_economics", search_morning_economics)
+    builder.add_node("search_opening_news", search_opening_news)
+    builder.add_node("fetch_stock_movers", fetch_stock_movers)
+    builder.add_node("generate_intraday_report", generate_intraday_report)
+    builder.add_node("send_notification", send_notification)
+
+    builder.add_edge(START, "search_opening_movers")
+    builder.add_edge(START, "search_morning_economics")
+    builder.add_edge(START, "search_opening_news")
+    builder.add_edge(START, "fetch_stock_movers")
+
+    builder.add_edge("search_opening_movers", "generate_intraday_report")
+    builder.add_edge("search_morning_economics", "generate_intraday_report")
+    builder.add_edge("search_opening_news", "generate_intraday_report")
+    builder.add_edge("fetch_stock_movers", "generate_intraday_report")
+
+    builder.add_edge("generate_intraday_report", "send_notification")
     builder.add_edge("send_notification", END)
 
     return builder.compile()
