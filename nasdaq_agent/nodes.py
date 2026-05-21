@@ -560,6 +560,29 @@ _AFTERHOURS_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克10
 ⚠️ 关注事项
 （1-2点：明日待关注风险或催化剂）"""
 
+_INTRADAY_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100开盘动态。
+根据提供的【实际行情数据】和新闻摘要，用中文生成开盘日报的叙述部分。
+
+严格要求：
+- 总字数不超过800字
+- 【实际行情数据】中的涨跌幅数字必须在开盘走势中引用，不得与实际数据矛盾
+- 只生成叙述部分，不要包含股票数据表格（表格将单独附加）
+- 使用以下固定格式，不要偏离
+
+输出格式：
+【纳斯达克100开盘日报】{date}
+
+📊 开盘走势
+（2-3句：QQQ/SPY实际开盘方向、与盘前预期对比、开盘15分钟整体氛围，引用实际涨跌幅数字）
+
+🔥 开盘三大热点
+1.
+2.
+3.
+
+⚠️ 盘中关注
+（1-2点：今日盘中重要时间节点或待关注催化剂）"""
+
 
 async def _generate_narrative(state: NasdaqReportState, system_prompt: str, movers_summary: str = "") -> str:
     """调用 LLM 生成叙述部分（不含股票表格），movers_summary 注入实际行情供交叉验证。"""
@@ -669,6 +692,39 @@ async def generate_afterhours_report(state: NasdaqReportState) -> dict:
     report = "\n\n".join(sections)
 
     print(f"[nasdaq] generate_afterhours_report: {time.perf_counter() - t0:.2f}s → {len(report)} chars total")
+    return {"report_content": report}
+
+
+async def generate_intraday_report(state: NasdaqReportState) -> dict:
+    """开盘日报：LLM生成叙述（含实际行情）+ 程序拼接指数表、七姐妹表、板块涨跌表。"""
+    t0 = time.perf_counter()
+    stock_results: list = state.get("stock_results") or []
+    movers_summary = _build_full_market_context({}, stock_results)
+    prompt = _INTRADAY_SYSTEM.replace("{date}", state.get("date") or "")
+    narrative = await _generate_narrative(state, prompt, movers_summary)
+
+    index_summary = state.get("index_summary", "")
+
+    # MAG7 均在 NASDAQ100，从 stock_results 过滤
+    mag7_results = [(sym, price, chg) for sym, price, chg in stock_results if sym in MAG7]
+    mag7_tbl = _mag7_table(mag7_results, price_label="实时价")
+
+    movers_table = _sector_movers_table(stock_results, price_label="实时价") if stock_results else "（股票数据暂不可用）"
+
+    sections = [narrative, "---"]
+    if index_summary:
+        sections += [index_summary, "---"]
+    sections += [
+        "💎 美股七姐妹开盘",
+        mag7_tbl,
+        "---",
+        "📈 板块涨跌榜（开盘15分钟）",
+        movers_table,
+        "来源：Reuters/CNBC/MarketWatch",
+    ]
+    report = "\n\n".join(sections)
+
+    print(f"[nasdaq] generate_intraday_report: {time.perf_counter() - t0:.2f}s → {len(report)} chars total")
     return {"report_content": report}
 
 
