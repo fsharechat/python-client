@@ -3,6 +3,7 @@ Nasdaq 100 日报 LangGraph 状态机。
 
 build_nasdaq_graph():    盘前图（4路新闻搜索 + 行情 → 盘前报告 → 通知）
 build_afterhours_graph(): 盘后图（4路盘后搜索 + 行情 → 盘后报告 → 通知）
+build_intraday_graph():  盘中图（3路开盘搜索 + 行情 → 盘中报告 → 通知）
 """
 
 from langgraph.graph import END, START, StateGraph

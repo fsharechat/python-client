@@ -5,6 +5,7 @@ Nasdaq 100 日报 Agent 各节点实现（全 async）。
 股票行情使用东方财富 push2 API（国内服务器直连稳定，无需认证，单次批量拉取）。
 盘前：4路搜索 + 行情 → generate_report → send_notification
 盘后：4路盘后搜索 + 行情 → generate_afterhours_report → send_notification
+盘中：3路开盘搜索 + 行情 → generate_intraday_report → send_notification
 """
 
 import json

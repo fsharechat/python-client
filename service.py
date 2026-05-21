@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
     app_state["graph"] = build_graph(retriever)
     print("Q&A service ready.")
 
-    # ── Nasdaq 日报定时任务（盘前 ET 08:00 + 盘后 ET 16:30） ────────────────
+    # ── Nasdaq 日报定时任务（盘前 ET 08:00 + 盘中 ET 09:45 + 盘后 ET 16:30） ───
     nasdaq_graph = build_nasdaq_graph()
     app_state["nasdaq_graph"] = nasdaq_graph
 
