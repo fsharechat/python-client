@@ -141,6 +141,33 @@ async def search_tomorrow_preview(state: NasdaqReportState) -> dict:
     return {"raw_articles": results}
 
 
+async def search_opening_movers(state: NasdaqReportState) -> dict:
+    t0 = time.perf_counter()
+    query = f"Nasdaq stocks gap up gap down market open {state['date']}"
+    print(f"[nasdaq] search_opening_movers query: {query}")
+    results = await _ddg_search(query)
+    print(f"[nasdaq] search_opening_movers: {time.perf_counter() - t0:.2f}s → {len(results)} results")
+    return {"raw_articles": results}
+
+
+async def search_morning_economics(state: NasdaqReportState) -> dict:
+    t0 = time.perf_counter()
+    query = f"US economic data release morning CPI jobs {state['date']}"
+    print(f"[nasdaq] search_morning_economics query: {query}")
+    results = await _ddg_search(query)
+    print(f"[nasdaq] search_morning_economics: {time.perf_counter() - t0:.2f}s → {len(results)} results")
+    return {"raw_articles": results}
+
+
+async def search_opening_news(state: NasdaqReportState) -> dict:
+    t0 = time.perf_counter()
+    query = f"stock market open recap early trading {state['date']}"
+    print(f"[nasdaq] search_opening_news query: {query}")
+    results = await _ddg_search(query)
+    print(f"[nasdaq] search_opening_news: {time.perf_counter() - t0:.2f}s → {len(results)} results")
+    return {"raw_articles": results}
+
+
 # ─── 股票涨跌幅节点（东方财富 push2 API，国内稳定访问） ──────────────────────
 
 def _sector_movers_table(all_results: list[tuple], price_label: str = "价格") -> str:
