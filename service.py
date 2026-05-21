@@ -6,6 +6,7 @@ Endpoints:
   POST /stream                     – streaming Q&A (SSE)
   GET  /health                     – liveness probe
   POST /nasdaq/trigger             – manually trigger Nasdaq premarket report
+  POST /nasdaq/trigger/intraday    – manually trigger Nasdaq opening report
   POST /nasdaq/trigger/afterhours  – manually trigger Nasdaq afterhours report
 """
 
@@ -27,7 +28,7 @@ from pydantic import BaseModel
 from config import DOCS_PERSIST_PATH
 from graph import build_graph, QAState
 from ingest import build_retriever, load_retriever
-from nasdaq_agent.graph import build_nasdaq_graph, build_afterhours_graph
+from nasdaq_agent.graph import build_nasdaq_graph, build_afterhours_graph, build_intraday_graph
 
 
 # ─── Nasdaq report runner ─────────────────────────────────────────────────────
@@ -51,6 +52,24 @@ async def _run_afterhours_report(afterhours_graph) -> None:
         print("[afterhours] Afterhours report complete.")
     except Exception as e:
         print(f"[afterhours] Afterhours report failed: {e}")
+
+async def _run_intraday_report(intraday_graph) -> None:
+    today = date_type.today().isoformat()
+    print(f"[intraday] Starting opening report for {today} ...")
+    initial = {
+        "date": today,
+        "report_type": "intraday",
+        "raw_articles": [],
+        "index_summary": "",
+        "stock_results": [],
+        "report_content": "",
+        "send_status": "",
+    }
+    try:
+        await intraday_graph.ainvoke(initial)
+        print("[intraday] Opening report complete.")
+    except Exception as e:
+        print(f"[intraday] Opening report failed: {e}")
 
 
 # ─── App lifecycle ────────────────────────────────────────────────────────────
@@ -77,6 +96,9 @@ async def lifespan(app: FastAPI):
     afterhours_graph = build_afterhours_graph()
     app_state["afterhours_graph"] = afterhours_graph
 
+    intraday_graph = build_intraday_graph()
+    app_state["intraday_graph"] = intraday_graph
+
     scheduler = AsyncIOScheduler(timezone="America/New_York")
     scheduler.add_job(
         _run_nasdaq_report,
@@ -94,9 +116,17 @@ async def lifespan(app: FastAPI):
         minute=30,
         args=[afterhours_graph],
     )
+    scheduler.add_job(
+        _run_intraday_report,
+        "cron",
+        day_of_week="mon-fri",
+        hour=9,
+        minute=45,
+        args=[intraday_graph],
+    )
     scheduler.start()
     app_state["scheduler"] = scheduler
-    print("Nasdaq scheduler started (ET 08:00 premarket / ET 16:30 afterhours, Mon–Fri).")
+    print("Nasdaq scheduler started (ET 08:00 premarket / ET 09:45 intraday / ET 16:30 afterhours, Mon–Fri).")
 
     yield
 
@@ -228,6 +258,13 @@ async def trigger_afterhours_report():
     """立即触发一次纳斯达克盘后日报（用于测试或手动补发）。"""
     afterhours_graph = app_state["afterhours_graph"]
     asyncio.create_task(_run_afterhours_report(afterhours_graph))
+    return {"status": "triggered", "date": date_type.today().isoformat()}
+
+@app.post("/nasdaq/trigger/intraday")
+async def trigger_intraday_report():
+    """立即触发一次纳斯达克开盘日报（用于测试或手动补发）。"""
+    intraday_graph = app_state["intraday_graph"]
+    asyncio.create_task(_run_intraday_report(intraday_graph))
     return {"status": "triggered", "date": date_type.today().isoformat()}
 
 
