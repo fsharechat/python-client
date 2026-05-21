@@ -508,8 +508,8 @@ async def fetch_stock_movers(state: NasdaqReportState) -> dict:
         index_summary = ""
 
     elapsed = time.perf_counter() - t0
-    print(f"[nasdaq] fetch_stock_movers: {elapsed:.2f}s | stocks={len(stock_results if report_type == 'afterhours' else em_results)}")
-    return {"index_summary": index_summary, "stock_results": stock_results if report_type == "afterhours" else em_results}
+    print(f"[nasdaq] fetch_stock_movers: {elapsed:.2f}s | stocks={len(stock_results if report_type in ('afterhours', 'intraday') else em_results)}")
+    return {"index_summary": index_summary, "stock_results": stock_results if report_type in ("afterhours", "intraday") else em_results}
 
 
 # ─── 报告生成节点 ──────────────────────────────────────────────────────────────
