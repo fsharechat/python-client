@@ -209,8 +209,8 @@ pgrep -fa "service.py"
 # 重启（停止旧进程后重新启动）
 pkill -f "service.py" && sleep 1 && nohup python3.11 -u service.py > service.log 2>&1 &
 
-# 拉代码启动
-git pull && pkill -f "service.py" && sleep 1 && nohup python3.11 -u service.py > service.log 2>&1 & 
+# 拉代码启动（先安装新增依赖，避免 ModuleNotFoundError）
+git pull && python3.11 -m pip install -r requirements.txt && pkill -f "service.py" && sleep 1 && nohup python3.11 -u service.py > service.log 2>&1 &
 ```
 
 ```bash
