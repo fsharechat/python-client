@@ -389,3 +389,27 @@ curl --noproxy localhost -X POST http://localhost:8000/nasdaq/trigger
 ```
 
 正常情况下日报会在每个工作日美东时间 8:00 AM（北京时间夏令时 20:00 / 冬令时 21:00）自动发送，无需手动触发。
+
+### POST /nasdaq/trigger/intraday
+
+立即触发一次纳斯达克100盘中开盘日报（定时任务为每个工作日美东时间 9:45 AM），任务在后台异步执行。
+
+```bash
+curl --noproxy localhost -X POST http://localhost:8000/nasdaq/trigger/intraday
+# 响应: {"status": "triggered", "date": "2026-07-17"}
+```
+
+### POST /nasdaq/trigger/afterhours
+
+立即触发一次纳斯达克100盘后日报（定时任务为每个工作日美东时间 4:30 PM），任务在后台异步执行。
+
+```bash
+# 本地触发
+curl --noproxy localhost -X POST http://localhost:8000/nasdaq/trigger/afterhours
+
+# 线上服务触发
+curl -X POST http://server.fsharechat.cn:8000/nasdaq/trigger/afterhours
+# 响应: {"status": "triggered", "date": "2026-07-17"}
+```
+
+触发后可在服务器上 `tail -f service.log` 查看 `[afterhours]` 日志，完成时打印 `Afterhours report complete.`。
