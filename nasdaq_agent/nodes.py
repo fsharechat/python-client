@@ -473,7 +473,7 @@ async def fetch_stock_movers(state: NasdaqReportState) -> dict:
     print(f"[nasdaq] fetch_stock_movers: [{report_type}] 拉取行情...")
 
     if report_type in ("afterhours", "intraday"):
-        # 并发：Finnhub（101只成分股 + QQQ/SPY）与 EM 批量同时发起
+        # 并发：Finnhub（102只成分股 + QQQ/SPY）与 EM 批量同时发起
         fh_task = asyncio.create_task(_fetch_finnhub_quotes(NASDAQ100_TICKERS + ["QQQ", "SPY"]))
 
     try:
