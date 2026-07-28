@@ -15,7 +15,7 @@ NOTIFY_MOBILES: list[int] = [
 ]
 CLAUDE_MODEL = "claude-opus-4-7"
 CLASSIFY_MODEL = "claude-haiku-4-5-20251001"  # lightweight model for simple classification
-GENERATE_MODEL = "claude-sonnet-4-6"          # balanced speed/quality for answer generation
+GENERATE_MODEL = "claude-sonnet-5"             # balanced speed/quality for answer generation
 
 # Document cache (BM25 retriever — no embedding model required)
 DOCS_PERSIST_PATH = "./docs_cache.json"

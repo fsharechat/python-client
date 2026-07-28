@@ -106,7 +106,7 @@ GET https://push2.eastmoney.com/api/qt/ulist.np/get
 
 ### 3. 报告生成节点（generate_report）
 
-收集到所有搜索文章和股票数据后，调用 Claude（`claude-sonnet-4-6`）生成中文日报。
+收集到所有搜索文章和股票数据后，调用 Claude（`claude-sonnet-5`）生成中文日报。
 
 - 取前 20 条搜索结果，每条摘要截断为 200 字，避免 token 超限
 - 股票涨跌榜直接嵌入 System Prompt 的固定格式模板中

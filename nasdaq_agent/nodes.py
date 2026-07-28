@@ -217,9 +217,9 @@ def _build_full_market_context(yf_data: dict, stock_results: list) -> str:
     parts = ["【实际行情数据（请在叙述中引用具体数字）】"]
 
     # 主要指数盘前
-    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
+    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)", "RSP": "标普500等权ETF(RSP)"}
     index_lines = []
-    for sym in ["QQQ", "SPY"]:
+    for sym in ["QQQ", "SPY", "RSP"]:
         if sym in yf_data:
             q = yf_data[sym]
             s = "+" if q["chg_pct"] >= 0 else ""
@@ -279,9 +279,9 @@ async def _fetch_finnhub_quotes(symbols: list[str]) -> dict[str, dict]:
 
 async def _fetch_em_index_data(report_type: str) -> str:
     """东方财富指数兜底：盘前/盘后均用 QQQ/SPY ETF（对应关系明确，规避综合指数混淆）。"""
-    secids = "105.QQQ,106.SPY"
-    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
-    order = ["QQQ", "SPY"]
+    secids = "105.QQQ,106.SPY,106.RSP"
+    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)", "RSP": "标普500等权ETF(RSP)"}
+    order = ["QQQ", "SPY", "RSP"]
     val_label = "盘前价" if report_type == "premarket" else "收盘价"
 
     params = {"fltt": "2", "invt": "2", "fields": "f12,f2,f3,f4", "secids": secids}
@@ -357,8 +357,8 @@ async def _fetch_yf_premarket(symbols: list[str]) -> dict[str, dict]:
 
 async def _fetch_premarket_index_individual() -> str:
     """盘前指数兜底：Finnhub（昨收盘价）→ 东方财富。"""
-    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
-    order = ["QQQ", "SPY"]
+    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)", "RSP": "标普500等权ETF(RSP)"}
+    order = ["QQQ", "SPY", "RSP"]
 
     quotes = await _fetch_finnhub_quotes(order)
     rows = []
@@ -441,9 +441,9 @@ async def _fetch_stock_data() -> tuple[list[tuple], str]:
 
 
 def _build_fh_index_table(fh_data: dict, report_type: str) -> str:
-    """从 Finnhub 行情数据构建 QQQ/SPY 指数表格字符串。"""
-    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
-    order = ["QQQ", "SPY"]
+    """从 Finnhub 行情数据构建 QQQ/SPY/RSP 指数表格字符串。"""
+    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)", "RSP": "标普500等权ETF(RSP)"}
+    order = ["QQQ", "SPY", "RSP"]
     if report_type == "premarket":
         val_label = "盘前价"
     elif report_type == "intraday":
@@ -473,8 +473,8 @@ async def fetch_stock_movers(state: NasdaqReportState) -> dict:
     print(f"[nasdaq] fetch_stock_movers: [{report_type}] 拉取行情...")
 
     if report_type in ("afterhours", "intraday"):
-        # 并发：Finnhub（102只成分股 + QQQ/SPY）与 EM 批量同时发起
-        fh_task = asyncio.create_task(_fetch_finnhub_quotes(NASDAQ100_TICKERS + ["QQQ", "SPY"]))
+        # 并发：Finnhub（102只成分股 + QQQ/SPY/RSP）与 EM 批量同时发起
+        fh_task = asyncio.create_task(_fetch_finnhub_quotes(NASDAQ100_TICKERS + ["QQQ", "SPY", "RSP"]))
 
     try:
         em_results, _ = await _fetch_stock_data()
@@ -519,7 +519,7 @@ _PREMARKET_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100
 根据提供的【实际行情数据】和新闻摘要，用中文生成盘前日报的叙述部分。
 
 严格要求：
-- 总字数不超过800字
+- 总字数不超过1500字
 - 【实际行情数据】中的涨跌幅数字必须在市场概况中引用，不得与实际数据矛盾
 - 只生成叙述部分，不要包含股票数据表格（表格将单独附加）
 - 使用以下固定格式，不要偏离
@@ -542,7 +542,7 @@ _AFTERHOURS_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克10
 根据提供的【实际行情数据】和新闻摘要，用中文生成盘后日报的叙述部分。
 
 严格要求：
-- 总字数不超过800字
+- 总字数不超过1500字
 - 【实际行情数据】中的涨跌幅数字必须在收盘概况中引用，不得与实际数据矛盾
 - 只生成叙述部分，不要包含股票数据表格（表格将单独附加）
 - 使用以下固定格式，不要偏离
@@ -565,7 +565,7 @@ _INTRADAY_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100�
 根据提供的【实际行情数据】和新闻摘要，用中文生成开盘日报的叙述部分。
 
 严格要求：
-- 总字数不超过800字
+- 总字数不超过1500字
 - 【实际行情数据】中的涨跌幅数字必须在开盘走势中引用，不得与实际数据矛盾
 - 只生成叙述部分，不要包含股票数据表格（表格将单独附加）
 - 使用以下固定格式，不要偏离
@@ -606,7 +606,7 @@ async def _generate_narrative(state: NasdaqReportState, system_prompt: str, move
     llm = ChatAnthropic(
         model=GENERATE_MODEL,
         anthropic_api_key=ANTHROPIC_API_KEY,
-        max_tokens=900,
+        max_tokens=4048,
         max_retries=3,
     )
 
@@ -629,17 +629,17 @@ async def generate_report(state: NasdaqReportState) -> dict:
     stock_results: list = state.get("stock_results") or []
     prompt = _PREMARKET_SYSTEM.replace("{date}", state.get("date") or "")
 
-    # Step 1：获取 yfinance 盘前数据（QQQ/SPY + Mag7）
-    yf_data = await _fetch_yf_premarket(["QQQ", "SPY"] + MAG7)
+    # Step 1：获取 yfinance 盘前数据（QQQ/SPY/RSP + Mag7）
+    yf_data = await _fetch_yf_premarket(["QQQ", "SPY", "RSP"] + MAG7)
 
     # Step 2：构建完整行情上下文（指数 + 七姐妹 + EM 涨跌幅），交给 LLM 生成叙述
     market_context = _build_full_market_context(yf_data, stock_results)
     narrative = await _generate_narrative(state, prompt, market_context)
 
     # Step 3：拼接指数表（yfinance 主路径，失败则 Finnhub/EM 兜底）
-    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)"}
+    name_map = {"QQQ": "纳指100ETF(QQQ)", "SPY": "标普500ETF(SPY)", "RSP": "标普500等权ETF(RSP)"}
     index_rows = []
-    for sym in ["QQQ", "SPY"]:
+    for sym in ["QQQ", "SPY", "RSP"]:
         if sym not in yf_data:
             continue
         q = yf_data[sym]

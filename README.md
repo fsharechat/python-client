@@ -61,7 +61,7 @@ on_topic  off_topic
   │         │
   ▼         ▼
 ┌────────┐ ┌────────┐
-│retrieve│ │ reject │ → Claude Sonnet 4.6 直接回答通用问题
+│retrieve│ │ reject │ → Claude Sonnet 5 直接回答通用问题
 └───┬────┘ └────────┘
     │
     ▼
@@ -295,7 +295,7 @@ curl -X POST http://localhost:8000/ask \
   -d '{"question": "今天天气怎么样？"}'
 ```
 
-预期：由 Claude Sonnet 4.6 直接回答通用问题，`route` 为 `off_topic`。
+预期：由 Claude Sonnet 5 直接回答通用问题，`route` 为 `off_topic`。
 
 #### 4. 流式输出测试
 

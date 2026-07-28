@@ -100,14 +100,15 @@ async def lifespan(app: FastAPI):
     app_state["intraday_graph"] = intraday_graph
 
     scheduler = AsyncIOScheduler(timezone="America/New_York")
-    scheduler.add_job(
-        _run_nasdaq_report,
-        "cron",
-        day_of_week="mon-fri",
-        hour=8,
-        minute=0,
-        args=[nasdaq_graph],
-    )
+    # 盘前日报定时任务已暂停发送（如需恢复取消下方注释）。手动触发接口 /nasdaq/trigger 不受影响。
+    # scheduler.add_job(
+    #     _run_nasdaq_report,
+    #     "cron",
+    #     day_of_week="mon-fri",
+    #     hour=8,
+    #     minute=0,
+    #     args=[nasdaq_graph],
+    # )
     scheduler.add_job(
         _run_afterhours_report,
         "cron",
@@ -126,7 +127,7 @@ async def lifespan(app: FastAPI):
     )
     scheduler.start()
     app_state["scheduler"] = scheduler
-    print("Nasdaq scheduler started (ET 08:00 premarket / ET 09:45 intraday / ET 16:30 afterhours, Mon–Fri).")
+    print("Nasdaq scheduler started (ET 09:45 intraday / ET 16:30 afterhours, Mon–Fri; premarket paused).")
 
     yield
 

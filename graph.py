@@ -5,7 +5,7 @@ Flow:
   user question
       │
       ▼
-  [classify] ── off-topic ──► [reject] → Claude Sonnet 4.6 直接回答通用问题（流式输出）
+  [classify] ── off-topic ──► [reject] → Claude Sonnet 5 直接回答通用问题（流式输出）
       │
   on-topic
       │
@@ -15,7 +15,7 @@ Flow:
       ▼
   [grade_docs] → 并发逐块评分，过滤无关内容
       │
-      ├─ 有相关文档 ──► [generate] → Claude Sonnet 4.6 基于知识库回答（流式输出）
+      ├─ 有相关文档 ──► [generate] → Claude Sonnet 5 基于知识库回答（流式输出）
       │
       └─ 无相关文档 ──► [fallback] → 提示知识库不足，建议访问官网
 """
