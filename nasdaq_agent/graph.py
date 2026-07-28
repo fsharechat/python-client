@@ -25,6 +25,8 @@ from nasdaq_agent.nodes import (
     search_opening_movers,
     search_morning_economics,
     search_opening_news,
+    analyze_top_movers,
+    find_earnings_reporters,
     send_notification,
 )
 
@@ -66,6 +68,8 @@ def build_afterhours_graph():
     builder.add_node("search_closing_summary", search_closing_summary)
     builder.add_node("search_tomorrow_preview", search_tomorrow_preview)
     builder.add_node("fetch_stock_movers", fetch_stock_movers)
+    builder.add_node("analyze_top_movers", analyze_top_movers)
+    builder.add_node("find_earnings_reporters", find_earnings_reporters)
     builder.add_node("generate_afterhours_report", generate_afterhours_report)
     builder.add_node("send_notification", send_notification)
 
@@ -75,11 +79,18 @@ def build_afterhours_graph():
     builder.add_edge(START, "search_tomorrow_preview")
     builder.add_edge(START, "fetch_stock_movers")
 
+    # Track A / Track B 都串在 fetch_stock_movers 之后：
+    # fetch_stock_movers 本身要顺序拉 ~105 次 Finnhub 行情（1次/秒），
+    # 若 Track B 的 Finnhub 调用与之并发，会触发 429 并连带污染指数/板块表。
+    builder.add_edge("fetch_stock_movers", "analyze_top_movers")
+    builder.add_edge("fetch_stock_movers", "find_earnings_reporters")
+
     builder.add_edge("search_earnings_results", "generate_afterhours_report")
     builder.add_edge("search_afterhours_movers", "generate_afterhours_report")
     builder.add_edge("search_closing_summary", "generate_afterhours_report")
     builder.add_edge("search_tomorrow_preview", "generate_afterhours_report")
-    builder.add_edge("fetch_stock_movers", "generate_afterhours_report")
+    builder.add_edge("analyze_top_movers", "generate_afterhours_report")
+    builder.add_edge("find_earnings_reporters", "generate_afterhours_report")
 
     builder.add_edge("generate_afterhours_report", "send_notification")
     builder.add_edge("send_notification", END)

@@ -27,3 +27,6 @@ docs_cache.json
 
 # macOS
 .DS_Store
+
+# Superpowers SDD scratch workspace
+.superpowers/

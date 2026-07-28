@@ -10,8 +10,10 @@ Nasdaq 100 日报 Agent 各节点实现（全 async）。
 
 import json
 import time
+from datetime import datetime
 
 import httpx
+import pytz
 from bs4 import BeautifulSoup
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -38,6 +40,8 @@ _EM_HEADERS = {
 
 # Finnhub 实时行情接口（盘前/盘后指数与七姐妹）
 _FH_QUOTE_URL = "https://finnhub.io/api/v1/quote"
+_FH_EARNINGS_CALENDAR_URL = "https://finnhub.io/api/v1/calendar/earnings"
+_FH_FINANCIALS_REPORTED_URL = "https://finnhub.io/api/v1/stock/financials-reported"
 
 # 美股七姐妹（盘前日报单独展示）
 MAG7 = ["AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA"]
@@ -513,6 +517,286 @@ async def fetch_stock_movers(state: NasdaqReportState) -> dict:
     return {"index_summary": index_summary, "stock_results": stock_results if report_type in ("afterhours", "intraday") else em_results}
 
 
+def _select_top_movers(stock_results: list[tuple], n: int = 5) -> list[tuple]:
+    """按涨跌幅排序，返回全市场涨幅前n + 跌幅前n（最多2n条），元素为 (sym, price, chg)。"""
+    gainers = sorted([r for r in stock_results if r[2] > 0], key=lambda x: x[2], reverse=True)[:n]
+    losers = sorted([r for r in stock_results if r[2] < 0], key=lambda x: x[2])[:n]
+    return gainers + losers
+
+
+async def analyze_top_movers(state: NasdaqReportState) -> dict:
+    """盘后专用：对全市场涨跌幅前5+5个股做新闻搜索，找涨跌原因。"""
+    import asyncio
+    t0 = time.perf_counter()
+    stock_results: list = state.get("stock_results") or []
+    date = state.get("date") or ""
+    top_movers = _select_top_movers(stock_results, n=5)
+
+    async def _search_one(sym: str, chg: float) -> list[dict]:
+        direction = "up" if chg > 0 else "down"
+        query = f"{sym} stock why {direction} {date}"
+        return await _ddg_search(query, max_results=5)
+
+    tasks = [_search_one(sym, chg) for sym, price, chg in top_movers]
+    results = await asyncio.gather(*tasks)
+
+    movers_analysis = []
+    for (sym, price, chg), snippets in zip(top_movers, results):
+        if not snippets:
+            print(f"[nasdaq] analyze_top_movers: {sym} no DDG results, skipped")
+            continue
+        movers_analysis.append({"symbol": sym, "price": price, "chg": chg, "news_snippets": snippets})
+
+    print(f"[nasdaq] analyze_top_movers: {time.perf_counter() - t0:.2f}s → {len(movers_analysis)}/{len(top_movers)} movers with news")
+    return {"movers_analysis": movers_analysis}
+
+
+async def _fetch_finnhub_earnings_calendar(date: str) -> list[dict]:
+    """
+    查询 Finnhub 当日财报日历，返回其中属于纳指100成分股的完整条目（按 symbol 排序、去重）。
+
+    条目自带 epsActual / epsEstimate / quarter / year / hour，
+    因此不需要再单独调用 /stock/earnings（后者返回的是"最近已披露"财季，
+    在财报公布当日通常仍是上一季度的数据）。
+    """
+    ticker_set = set(NASDAQ100_TICKERS)
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(_FH_EARNINGS_CALENDAR_URL, params={
+                "from": date, "to": date, "token": FINNHUB_API_KEY,
+            })
+        if resp.status_code != 200:
+            print(f"[nasdaq] Finnhub earnings calendar {date}: status={resp.status_code} body={resp.text[:200]}")
+            return []
+        data = resp.json()
+        print(f"[nasdaq] Finnhub earnings calendar {date}: status={resp.status_code} raw={json.dumps(data)[:500]}")
+        entries = data.get("earningsCalendar") or []
+        matched: dict[str, dict] = {}
+        for e in entries:
+            sym = e.get("symbol")
+            if sym in ticker_set and sym not in matched:
+                matched[sym] = e
+        result = [matched[s] for s in sorted(matched)]
+        if not result:
+            print(f"[nasdaq] Finnhub earnings calendar {date}: status={resp.status_code} "
+                  f"0 NASDAQ100 matches（日历共 {len(entries)} 条）body={resp.text[:200]}")
+        else:
+            print(f"[nasdaq] Finnhub earnings calendar: {len(result)} NASDAQ100 matches: "
+                  + ", ".join(f"{e['symbol']}(FY{e.get('year')}Q{e.get('quarter')},"
+                              f"epsActual={e.get('epsActual')})" for e in result))
+        return result
+    except Exception as e:
+        print(f"[nasdaq] Finnhub earnings calendar {date} failed: {type(e).__name__}: {e}")
+        return []
+
+
+_NET_INCOME_CONCEPTS = {"NetIncomeLoss", "ProfitLoss", "us-gaap_NetIncomeLoss", "us-gaap_ProfitLoss"}
+_OPERATING_CF_CONCEPTS = {
+    "NetCashProvidedByUsedInOperatingActivities",
+    "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+    "us-gaap_NetCashProvidedByUsedInOperatingActivities",
+    "us-gaap_NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+}
+_CAPEX_CONCEPTS = {
+    "PaymentsToAcquirePropertyPlantAndEquipment",
+    "PaymentsForCapitalImprovements",
+    "PaymentsToAcquireProductiveAssets",
+    "us-gaap_PaymentsToAcquirePropertyPlantAndEquipment",
+    "us-gaap_PaymentsForCapitalImprovements",
+    "us-gaap_PaymentsToAcquireProductiveAssets",
+}
+
+
+def _find_concept_value(items: list[dict], concepts: set[str]) -> float | None:
+    """从 Finnhub financials-reported 的 ic/cf 数组中按 concept 标签找数值。"""
+    for item in items:
+        if item.get("concept") in concepts:
+            try:
+                return float(item.get("value"))
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _report_period_days(report: dict) -> int | None:
+    """报表覆盖的天数（endDate - startDate）。约 90 天=单季，180/270/360 天=年初至今累计。"""
+    try:
+        d0 = datetime.fromisoformat(str(report.get("startDate")))
+        d1 = datetime.fromisoformat(str(report.get("endDate")))
+        return (d1 - d0).days
+    except (TypeError, ValueError):
+        return None
+
+
+def _pick_matched_reports(reports: list[dict], year: int, quarter: int) -> tuple[dict | None, dict | None]:
+    """
+    在 financials-reported（按时间倒序）中定位"财报日历宣告的那一财季"的报表，
+    以及同财年紧邻上一季的报表（用于把年初至今累计值还原成单季值）。
+    找不到宣告财季则返回 (None, None) —— 说明 10-Q 还没提交/收录，不能拿旧财季顶替。
+    """
+    matched_idx = None
+    for i, rep in enumerate(reports):
+        if rep.get("year") == year and rep.get("quarter") == quarter:
+            matched_idx = i
+            break
+    if matched_idx is None:
+        return None, None
+
+    prior = None
+    for rep in reports[matched_idx + 1:]:
+        if rep.get("year") == year and rep.get("quarter") == quarter - 1:
+            prior = rep
+            break
+    return reports[matched_idx], prior
+
+
+async def _fetch_finnhub_financials(symbol: str, year: int | None, quarter: int | None) -> dict | None:
+    """
+    取"财报日历宣告的那一财季"的净利润/经营现金流/资本支出，并算出 FCF。
+
+    两条硬约束（避免把错的数字当成当期财报）：
+    1) financials-reported 里必须存在 year/quarter 与财报日历一致的报表，否则返回 None
+       （财报电话会通常比 10-Q 提交早数天到数周，当日大概率还查不到）。
+    2) 10-Q 的利润表/现金流量表在 Q2/Q3/Q4 是年初至今累计值，
+       必须减去同财年上一季报表才是单季值；无法确认相邻上一季时返回 None，不猜。
+    """
+    if year is None or quarter is None:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(_FH_FINANCIALS_REPORTED_URL, params={
+                "symbol": symbol, "freq": "quarterly", "token": FINNHUB_API_KEY,
+            })
+        if resp.status_code != 200:
+            print(f"[nasdaq] Finnhub financials-reported {symbol}: status={resp.status_code} body={resp.text[:200]}")
+            return None
+        data = resp.json()
+        reports = data.get("data") or []
+        if not reports:
+            print(f"[nasdaq] Finnhub financials-reported {symbol}: status={resp.status_code} "
+                  f"no reports body={resp.text[:200]}")
+            return None
+
+        matched, prior = _pick_matched_reports(reports, year, quarter)
+        if matched is None:
+            latest = reports[0]
+            print(f"[nasdaq] Finnhub financials-reported {symbol}: status={resp.status_code} "
+                  f"财报日历宣告 FY{year}Q{quarter}，但最新已提交报表为 "
+                  f"FY{latest.get('year')}Q{latest.get('quarter')}（10-Q 尚未跟上），跳过财务报表数据")
+            return None
+
+        rep0 = matched.get("report", {})
+        ni0 = _find_concept_value(rep0.get("ic", []), _NET_INCOME_CONCEPTS)
+        ocf0 = _find_concept_value(rep0.get("cf", []), _OPERATING_CF_CONCEPTS)
+        cx0 = _find_concept_value(rep0.get("cf", []), _CAPEX_CONCEPTS)
+
+        days0 = _report_period_days(matched)
+        # Q1 本身就是单季；另外若报表期间只有约一个季度（<=100天），同样视为单季值
+        if quarter == 1 or (days0 is not None and days0 <= 100):
+            net_income, operating_cf, capex = ni0, ocf0, cx0
+            print(f"[nasdaq] financials {symbol} FY{year}Q{quarter}: 单季报表（{days0}天），直接取值")
+        else:
+            if prior is None:
+                print(f"[nasdaq] Finnhub financials-reported {symbol}: FY{year}Q{quarter} 为累计值"
+                      f"（{days0}天）但缺少同财年 Q{quarter - 1} 报表，无法还原单季，跳过财务报表数据")
+                return None
+            sd0, sd1 = str(matched.get("startDate") or ""), str(prior.get("startDate") or "")
+            if sd0 and sd1 and sd0 != sd1:
+                print(f"[nasdaq] Finnhub financials-reported {symbol}: FY{year}Q{quarter} 与 Q{quarter - 1} "
+                      f"起始日不一致（{sd0} vs {sd1}），不是同财年累计口径，跳过财务报表数据")
+                return None
+            rep1 = prior.get("report", {})
+            ni1 = _find_concept_value(rep1.get("ic", []), _NET_INCOME_CONCEPTS)
+            ocf1 = _find_concept_value(rep1.get("cf", []), _OPERATING_CF_CONCEPTS)
+            cx1 = _find_concept_value(rep1.get("cf", []), _CAPEX_CONCEPTS)
+            net_income = ni0 - ni1 if ni0 is not None and ni1 is not None else None
+            operating_cf = ocf0 - ocf1 if ocf0 is not None and ocf1 is not None else None
+            capex = cx0 - cx1 if cx0 is not None and cx1 is not None else None
+            print(f"[nasdaq] financials {symbol} FY{year}Q{quarter}: 累计值（{days0}天）减 Q{quarter - 1}"
+                  f"（{_report_period_days(prior)}天）→ 净利润 {ni0}-{ni1}={net_income}、"
+                  f"经营现金流 {ocf0}-{ocf1}={operating_cf}、资本支出 {cx0}-{cx1}={capex}")
+
+        fcf = (operating_cf - abs(capex)) if operating_cf is not None and capex is not None else None
+        return {"net_income": net_income, "capex": capex, "operating_cf": operating_cf, "fcf": fcf}
+    except Exception as e:
+        print(f"[nasdaq] Finnhub financials-reported {symbol} FY{year}Q{quarter} failed: {type(e).__name__}: {e}")
+        return None
+
+
+_FINANCIAL_KEYS = ("net_income", "operating_cf", "capex", "fcf")
+
+
+async def find_earnings_reporters(state: NasdaqReportState) -> dict:
+    """盘后专用：查询当日（美东）公布财报的纳指100成分股，抓取EPS与关键财务数据。"""
+    import asyncio
+    t0 = time.perf_counter()
+
+    # 财报日历是"精确日期匹配"，必须用美东交易日；服务器本地日期（本项目为 UTC+8）可能差一天
+    et_date = datetime.now(pytz.timezone("America/New_York")).date().isoformat()
+    if et_date != (state.get("date") or ""):
+        print(f"[nasdaq] find_earnings_reporters: 财报日历使用美东日期 {et_date}"
+              f"（state.date={state.get('date')!r}）")
+
+    calendar_entries = await _fetch_finnhub_earnings_calendar(et_date)
+    if not calendar_entries:
+        print(f"[nasdaq] find_earnings_reporters: {time.perf_counter() - t0:.2f}s → 0 reporters")
+        return {"earnings_analysis": []}
+
+    earnings_analysis = []
+    for i, cal in enumerate(calendar_entries):
+        sym = cal["symbol"]
+        year, quarter = cal.get("year"), cal.get("quarter")
+        financials = await _fetch_finnhub_financials(sym, year, quarter)
+
+        entry = {
+            "symbol": sym,
+            "eps_actual": cal.get("epsActual"),
+            "eps_estimate": cal.get("epsEstimate"),
+            "fiscal_year": year,
+            "fiscal_quarter": quarter,
+            "hour": cal.get("hour"),
+            "net_income": None,
+            "operating_cf": None,
+            "capex": None,
+            "fcf": None,
+        }
+        if financials:
+            entry.update(financials)
+
+        has_financials = any(entry[k] is not None for k in _FINANCIAL_KEYS)
+        if entry["eps_actual"] is None and entry["eps_estimate"] is None and not has_financials:
+            print(f"[nasdaq] find_earnings_reporters: {sym} no data, skipped")
+            continue
+        earnings_analysis.append(entry)
+        if i < len(calendar_entries) - 1:
+            await asyncio.sleep(1)
+
+    print(f"[nasdaq] find_earnings_reporters: {time.perf_counter() - t0:.2f}s → "
+          f"{len(earnings_analysis)}/{len(calendar_entries)} reporters with data")
+    return {"earnings_analysis": earnings_analysis}
+
+
+def _merge_movers_and_earnings(movers_analysis: list[dict], earnings_analysis: list[dict]) -> tuple[list[dict], list[dict]]:
+    """
+    合并异动个股（Track A）与财报公司（Track B）结果。
+    返回 (merged_movers, earnings_only)：
+    - merged_movers：movers_analysis 的每条，若 symbol 命中 earnings_analysis 则附加 "earnings" 字段
+    - earnings_only：earnings_analysis 中未出现在 movers_analysis 里的条目（发了财报但不在涨跌前5+5）
+    """
+    earnings_map = {e["symbol"]: e for e in earnings_analysis}
+    mover_symbols = {m["symbol"] for m in movers_analysis}
+
+    merged_movers = []
+    for m in movers_analysis:
+        entry = dict(m)
+        if m["symbol"] in earnings_map:
+            entry["earnings"] = earnings_map[m["symbol"]]
+        merged_movers.append(entry)
+
+    earnings_only = [e for e in earnings_analysis if e["symbol"] not in mover_symbols]
+    return merged_movers, earnings_only
+
+
 # ─── 报告生成节点 ──────────────────────────────────────────────────────────────
 
 _PREMARKET_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100盘前动态。
@@ -560,6 +844,125 @@ _AFTERHOURS_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克10
 
 ⚠️ 关注事项
 （1-2点：明日待关注风险或催化剂）"""
+
+_MOVERS_INSIGHT_SYSTEM = """你是专业美股分析师。根据提供的个股新闻摘要和财报数据，用中文生成两个部分的精简条目。
+
+严格要求：
+- 总字数不超过800字
+- 每只股票1-2句话，简明扼要
+- 若某只股票的新闻摘要无法解释其涨跌原因，跳过该股，不要编造原因
+- 财报数据（净利润/EPS/capex/FCF）若提供了就必须引用具体数字，不得编造未提供的数字
+- 极其重要：每只异动个股都会标注"[今日已确认发布财报]"或"[今日未确认发布财报]"。只有标注为"已确认发布财报"的股票，才能把涨跌原因归因于该公司自己的财报结果（如"财报不及预期""营收超预期"等）。对于标注"未确认发布财报"的股票，即使新闻摘要中出现了"财报""业绩""earnings"等字眼，也绝对不能说该公司自己发布了财报或财报不及预期——如果摘要提到的是同行/板块的财报（比如提到了其他公司名），应描述为"受同行财报拖累/带动"之类的联动关系并点出实际发布财报的公司名；如果摘要不足以支撑一个非财报类的具体原因，直接跳过该股
+- 严格使用以下格式，若某部分没有对应股票数据则完全省略该部分（包括标题）
+
+输出格式：
+🔍 异动个股解读
+• {代码} {涨跌幅}：（1-2句涨跌原因，若有财报数据则一并给出净利润/EPS/capex/FCF）
+
+📑 今日财报速览
+• {代码}：（净利润/EPS实际vs预期/capex/FCF关键数字）"""
+
+_HOUR_LABELS = {"bmo": "盘前公布", "amc": "盘后公布", "dmh": "盘中公布"}
+
+
+def _fmt_earnings_data(entry: dict) -> str:
+    """
+    把财报条目预先格式化成纯中文字符串再喂给 LLM。
+    为 None 的字段整段省略（绝不把字面量 "None" 写进 prompt），
+    金额在 Python 侧完成"原始美元 → 亿美元"换算，不留给模型判断。
+    """
+    if not entry:
+        return ""
+    bits: list[str] = []
+
+    year, quarter = entry.get("fiscal_year"), entry.get("fiscal_quarter")
+    if year and quarter:
+        bits.append(f"财季FY{year}Q{quarter}")
+    hour_label = _HOUR_LABELS.get(entry.get("hour") or "")
+    if hour_label:
+        bits.append(hour_label)
+
+    actual, estimate = entry.get("eps_actual"), entry.get("eps_estimate")
+    if actual is not None and estimate is not None:
+        bits.append(f"EPS实际${actual:.2f} vs 预期${estimate:.2f}")
+    elif actual is not None:
+        bits.append(f"EPS实际${actual:.2f}")
+    elif estimate is not None:
+        bits.append(f"EPS预期${estimate:.2f}（实际值暂未披露）")
+
+    for key, label, use_abs in (
+        ("net_income", "单季净利润", False),
+        ("operating_cf", "单季经营现金流", False),
+        ("capex", "单季资本支出", True),
+        ("fcf", "单季自由现金流", False),
+    ):
+        value = entry.get(key)
+        if value is None:
+            continue
+        amount = abs(value) if use_abs else value
+        bits.append(f"{label}${amount / 1e8:.2f}亿")
+
+    return "；".join(bits)
+
+
+async def _generate_movers_insight(merged_movers: list[dict], earnings_only: list[dict]) -> str:
+    """调用 LLM 生成异动个股解读 + 财报速览。均为空时返回空字符串。"""
+    if not merged_movers and not earnings_only:
+        return ""
+
+    t0 = time.perf_counter()
+
+    def _fmt_movers(entries: list[dict]) -> str:
+        lines = []
+        for e in entries:
+            snippets = "; ".join(s.get("body", "")[:150] for s in e.get("news_snippets", [])[:3])
+            confirmed_tag = "[今日已确认发布财报]" if e.get("earnings") else "[今日未确认发布财报]"
+            line = f"{e['symbol']} {e['chg']:+.2f}% (${e['price']:.2f}) {confirmed_tag}：新闻摘要：{snippets}"
+            financials = _fmt_earnings_data(e.get("earnings") or {})
+            if financials:
+                line += f" | 财报数据：{financials}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _fmt_earnings_only(entries: list[dict]) -> str:
+        lines = []
+        for e in entries:
+            financials = _fmt_earnings_data(e)
+            if financials:
+                lines.append(f"{e['symbol']}：{financials}")
+        return "\n".join(lines)
+
+    movers_block = _fmt_movers(merged_movers) if merged_movers else ""
+    earnings_block = _fmt_earnings_only(earnings_only) if earnings_only else ""
+
+    parts = []
+    if movers_block:
+        parts.append("【异动个股新闻与财报】\n" + movers_block)
+    if earnings_block:
+        parts.append("【今日财报公司（非异动榜）】\n" + earnings_block)
+    if not parts:
+        return ""
+    human_content = "\n\n".join(parts)
+
+    llm = ChatAnthropic(
+        model=GENERATE_MODEL,
+        anthropic_api_key=ANTHROPIC_API_KEY,
+        max_tokens=2048,
+        max_retries=3,
+    )
+
+    try:
+        insight = await (llm | StrOutputParser()).ainvoke([
+            SystemMessage(content=_MOVERS_INSIGHT_SYSTEM),
+            HumanMessage(content=human_content),
+        ])
+    except Exception as e:
+        print(f"[nasdaq] _generate_movers_insight failed: {e}")
+        return ""
+
+    print(f"[nasdaq] _generate_movers_insight: {time.perf_counter() - t0:.2f}s → {len(insight)} chars")
+    return insight
+
 
 _INTRADAY_SYSTEM = """你是专业美股分析师，擅长整理纳斯达克100开盘动态。
 根据提供的【实际行情数据】和新闻摘要，用中文生成开盘日报的叙述部分。
@@ -676,17 +1079,24 @@ async def generate_report(state: NasdaqReportState) -> dict:
 
 
 async def generate_afterhours_report(state: NasdaqReportState) -> dict:
-    """盘后日报：LLM生成叙述（含实际行情交叉验证）+ 程序拼接板块涨跌表格。"""
+    """盘后日报：LLM生成叙述（含实际行情交叉验证）+ 异动个股解读/财报速览 + 程序拼接板块涨跌表格。"""
     t0 = time.perf_counter()
     stock_results: list = state.get("stock_results") or []
     movers_summary = _build_full_market_context({}, stock_results)
     prompt = _AFTERHOURS_SYSTEM.replace("{date}", state.get("date") or "")
     narrative = await _generate_narrative(state, prompt, movers_summary)
 
+    merged_movers, earnings_only = _merge_movers_and_earnings(
+        state.get("movers_analysis") or [], state.get("earnings_analysis") or []
+    )
+    insight = await _generate_movers_insight(merged_movers, earnings_only)
+
     index_summary = state.get("index_summary", "")
     movers_table = _sector_movers_table(stock_results, price_label="收盘价") if stock_results else "（股票数据暂不可用）"
 
     sections = [narrative, "---"]
+    if insight:
+        sections += [insight, "---"]
     if index_summary:
         sections += [index_summary, "---"]
     sections += ["📈 板块涨跌榜", movers_table, "来源：Reuters/CNBC/MarketWatch"]
