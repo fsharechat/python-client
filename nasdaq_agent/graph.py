@@ -70,7 +70,11 @@ def build_afterhours_graph():
     builder.add_node("fetch_stock_movers", fetch_stock_movers)
     builder.add_node("analyze_top_movers", analyze_top_movers)
     builder.add_node("find_earnings_reporters", find_earnings_reporters)
-    builder.add_node("generate_afterhours_report", generate_afterhours_report)
+    # defer=True：Track B（analyze_top_movers / find_earnings_reporters）串在
+    # fetch_stock_movers 之后，比 4 路搜索晚一个 superstep 完成。LangGraph 的调度是
+    # 「任一入边更新即触发」，不加 defer 会先用空的 movers/earnings 发一份日报，
+    # 等 Track B 完成后再发第二份。defer 让本节点推迟到所有分支跑完只执行一次。
+    builder.add_node("generate_afterhours_report", generate_afterhours_report, defer=True)
     builder.add_node("send_notification", send_notification)
 
     builder.add_edge(START, "search_earnings_results")
