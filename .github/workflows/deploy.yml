@@ -39,8 +39,8 @@ jobs:
             git pull
             python3.11 -m pip install -r requirements.txt
 
-            # [s] 写法让 pkill 不会匹配到本脚本自身的进程；没有旧进程时不报错
-            pkill -f "python3.11 -u [s]ervice.py" || true
+            # 锚定命令行开头（argv[0] 以 python3.11 结尾），避免匹配到本脚本自身（其命令行以 bash 开头且包含下方启动命令）；没有旧进程时不报错
+            pkill -f '^[^ ]*python3\.11 -u service\.py' || true
             sleep 1
 
             # setsid + 重定向 stdin，让服务脱离 SSH 会话，部署步骤结束后不会被一起关掉
