@@ -47,6 +47,7 @@ def _llm() -> ChatAnthropic:
         model=CLAUDE_MODEL,
         anthropic_api_key=ANTHROPIC_API_KEY,
         max_tokens=16,  # only need "faq" or "order_ops"
+        thinking={"type": "disabled"},  # Haiku 5.5 thinks by default; 16 tokens leaves no room
     )
 
 

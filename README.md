@@ -86,7 +86,7 @@ on_topic  off_topic
 
 | 组件 | 技术 | 说明 |
 |------|------|------|
-| LLM | Claude Opus 4.7（Anthropic） | 问题分类、文档评分、答案生成，启用 adaptive thinking |
+| LLM | Claude Opus 5.5 / Sonnet 5.5 / Haiku 5.5（Anthropic） | 问题分类、文档评分、答案生成，启用 adaptive thinking |
 | 向量嵌入 | `BAAI/bge-small-zh-v1.5`（本地） | 中文优化嵌入模型，无需额外 API Key |
 | 向量数据库 | ChromaDB（本地持久化） | 存储飞享IM知识库的文档向量 |
 | 工作流编排 | LangGraph | 状态机驱动的多节点 RAG 流程 |
@@ -149,7 +149,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxxxxx
 其他可选配置项在 `config.py` 中修改：
 
 ```python
-CLAUDE_MODEL = "claude-opus-4-7"      # 使用的 Claude 模型
+CLAUDE_MODEL = "claude-opus-5-5"      # 使用的 Claude 模型
 CHROMA_PERSIST_DIR = "./chroma_db"    # 向量库存储目录
 EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"  # 嵌入模型
 ```

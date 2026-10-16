@@ -56,7 +56,7 @@ JAVA_ORDER_AGENT_URL=http://localhost:8080
 ORCHESTRATOR_PORT=8001
 
 # 意图分类模型（默认使用 Haiku，速度快、成本低）
-ORCHESTRATOR_MODEL=claude-haiku-4-5-20251001
+ORCHESTRATOR_MODEL=claude-haiku-5-5
 ```
 
 ---

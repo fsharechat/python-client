@@ -61,7 +61,7 @@ def _history_to_messages(history: list[dict]) -> list:
 
 # ─── LLM ──────────────────────────────────────────────────────────────────────
 
-def _llm(streaming: bool = False, model: str = CLAUDE_MODEL, thinking: bool = False, max_tokens: int = 2048) -> ChatAnthropic:
+def _llm(streaming: bool = False, model: str = CLAUDE_MODEL, thinking: dict | None = None, max_tokens: int = 2048) -> ChatAnthropic:
     kwargs: dict = dict(
         model=model,
         anthropic_api_key=ANTHROPIC_API_KEY,
@@ -70,7 +70,7 @@ def _llm(streaming: bool = False, model: str = CLAUDE_MODEL, thinking: bool = Fa
         max_retries=3,
     )
     if thinking:
-        kwargs["thinking"] = {"type": "adaptive"}
+        kwargs["thinking"] = thinking
     return ChatAnthropic(**kwargs)
 
 
@@ -82,7 +82,7 @@ CLASSIFY_SYSTEM = """你是飞享IM智能助手的问题分类器。
 
 def classify(state: QAState, retriever) -> dict:
     t0 = time.perf_counter()
-    llm = _llm(model=CLASSIFY_MODEL)
+    llm = _llm(model=CLASSIFY_MODEL, thinking={"type": "disabled"})  # Haiku 5.5 thinks by default
     # 带入最近 2 轮历史，帮助识别追问意图（如"那它的价格呢？"）
     messages = [SystemMessage(content=CLASSIFY_SYSTEM)]
     messages.extend(_history_to_messages(state.history[-4:]))
@@ -114,7 +114,7 @@ def grade_docs(state: QAState, retriever) -> dict:
 
     def _grade_one(i: int, doc: str) -> tuple[int, str, str]:
         t1 = time.perf_counter()
-        llm = _llm(thinking=True)
+        llm = _llm(thinking={"type": "adaptive"})
         resp = llm.invoke([
             SystemMessage(content=GRADE_SYSTEM),
             HumanMessage(content=f"问题：{state.question}\n\n文档：{doc}"),
@@ -149,7 +149,7 @@ def generate(state: QAState, retriever) -> dict:
     messages = [SystemMessage(content=GENERATE_SYSTEM)]
     messages.extend(_history_to_messages(state.history))
     messages.append(HumanMessage(content=f"参考资料：\n{context}\n\n用户问题：{state.question}"))
-    llm = _llm(streaming=True, model=GENERATE_MODEL, thinking=False, max_tokens=600)
+    llm = _llm(streaming=True, model=GENERATE_MODEL, max_tokens=600)
     answer = (llm | StrOutputParser()).invoke(messages)
     print(f"[timing] generate: {time.perf_counter() - t0:.2f}s")
     return {"answer": answer}
@@ -179,7 +179,7 @@ def reject(state: QAState, retriever) -> dict:
     messages = [SystemMessage(content=GENERAL_SYSTEM)]
     messages.extend(_history_to_messages(state.history))
     messages.append(HumanMessage(content=state.question))
-    llm = _llm(streaming=True, model=GENERATE_MODEL, thinking=False, max_tokens=8192)
+    llm = _llm(streaming=True, model=GENERATE_MODEL, max_tokens=8192)
     answer = (llm | StrOutputParser()).invoke(messages)
     print(f"[timing] general_answer: {time.perf_counter() - t0:.2f}s")
     return {"answer": answer}

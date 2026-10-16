@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Language
+
+所有回复统一使用中文。
+
 ## Project Overview
 
 A RAG (Retrieval-Augmented Generation) intelligent Q&A system for 飞享IM (FshareChat), built with LangGraph state machine orchestration and Claude API. Answers questions about FshareChat features, deployment, and usage via both CLI and HTTP interfaces.
@@ -43,7 +47,7 @@ Question → [classify] → on_topic → [retrieve] → [grade_docs] → [genera
 **Key design choices:**
 - **Dual knowledge sources**: `ingest.py` combines live web scraping (4 FshareChat URLs) with the large static knowledge block in `config.py`. The static block is the primary fallback.
 - **Per-document grading**: `grade_docs` node calls Claude individually for each retrieved chunk — quality filtering over raw retrieval.
-- **Adaptive thinking**: All Claude calls use `claude-opus-4-7` with `thinking={"type": "adaptive"}`.
+- **Models**: grading uses `claude-opus-5-5` with `thinking={"type": "adaptive"}`; classification uses `claude-haiku-5-5` with thinking disabled; generation uses `claude-sonnet-5-5`.
 - **Local embeddings**: `BAAI/bge-small-zh-v1.5` runs locally for Chinese-optimized embeddings; ChromaDB persists to `./chroma_db/`.
 - **Retriever binding via closure**: `build_graph(retriever)` closes over the retriever so node functions stay pure.
 
