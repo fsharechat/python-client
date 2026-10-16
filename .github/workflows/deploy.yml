@@ -1,0 +1,50 @@
+name: Deploy Python Client
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# 同一时间只跑一次部署，避免两次 push 交错重启服务
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Pull and restart on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          command_timeout: 10m
+          script: |
+            set -e
+            cd /data/python-client
+
+            # 拉代码，并先安装新增依赖，避免 ModuleNotFoundError
+            git pull
+            python3.11 -m pip install -r requirements.txt
+
+            # [s] 写法让 pkill 不会匹配到本脚本自身的进程；没有旧进程时不报错
+            pkill -f "python3.11 -u [s]ervice.py" || true
+            sleep 1
+
+            # setsid + 重定向 stdin，让服务脱离 SSH 会话，部署步骤结束后不会被一起关掉
+            setsid nohup python3.11 -u service.py > service.log 2>&1 < /dev/null &
+
+            # 健康检查：最多等 60 秒，失败时打印日志尾部并让本次部署标红
+            for i in $(seq 1 30); do
+              if curl -sf http://localhost:8000/health > /dev/null; then
+                echo "service.py is up"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "service.py failed to start, last log lines:"
+            tail -n 50 service.log
+            exit 1
