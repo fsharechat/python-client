@@ -23,6 +23,17 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           command_timeout: 10m
           script: |
+            # 非交互式 SSH 不加载登录 profile，python3.11 可能不在 PATH 里
+            source /etc/profile > /dev/null 2>&1 || true
+            source ~/.bash_profile > /dev/null 2>&1 || true
+            source ~/.bashrc > /dev/null 2>&1 || true
+            export PATH="/usr/local/bin:$PATH"
+            if ! command -v python3.11 > /dev/null; then
+              echo "python3.11 not found in PATH: $PATH"
+              exit 1
+            fi
+            echo "using $(command -v python3.11)"
+
             set -e
             cd /data/python-client
 
