@@ -404,11 +404,7 @@ curl --noproxy localhost -X POST http://localhost:8000/nasdaq/trigger/intraday
 立即触发一次纳斯达克100盘后日报（定时任务为每个工作日美东时间 4:30 PM），任务在后台异步执行。
 
 ```bash
-# 本地触发
 curl --noproxy localhost -X POST http://localhost:8000/nasdaq/trigger/afterhours
-
-# 线上服务触发
-curl -X POST http://server.fsharechat.cn:8000/nasdaq/trigger/afterhours
 # 响应: {"status": "triggered", "date": "2026-07-17"}
 ```
 
