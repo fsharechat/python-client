@@ -23,11 +23,9 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           command_timeout: 10m
           script: |
-            # 非交互式 SSH 不加载登录 profile，python3.11 可能不在 PATH 里
-            source /etc/profile > /dev/null 2>&1 || true
-            source ~/.bash_profile > /dev/null 2>&1 || true
-            source ~/.bashrc > /dev/null 2>&1 || true
-            export PATH="/usr/local/bin:$PATH"
+            # python3.11 由 pyenv 管理；非交互式 SSH 不会执行 ~/.bashrc 里的 pyenv init，需手动加入 PATH
+            export PYENV_ROOT="/root/.pyenv"
+            export PATH="$PYENV_ROOT/shims:$PYENV_ROOT/bin:$PATH"
             if ! command -v python3.11 > /dev/null; then
               echo "python3.11 not found in PATH: $PATH"
               exit 1
